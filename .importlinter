@@ -1,0 +1,73 @@
+# Architectural contracts, checked in CI by `make arch`.
+#
+# These are not style preferences. Each one encodes a rule that, once broken,
+# gets expensive to unpick: business logic leaking into endpoints, SQL leaking
+# into business logic, or the domain growing a dependency that makes it
+# untestable without Docker.
+
+[importlinter]
+root_package = app
+include_external_packages = True
+
+[importlinter:contract:layers]
+name = Layers point one way only
+type = layers
+layers =
+    api
+    services
+    repositories
+    models
+containers =
+    app
+
+[importlinter:contract:endpoints-hold-no-logic]
+name = Endpoints run no queries and own no rules
+type = forbidden
+source_modules =
+    app.api.v1
+forbidden_modules =
+    sqlalchemy
+    app.models
+    app.repositories
+    app.db
+# Direct imports only. An endpoint calling a service that calls a repository is
+# the design; an endpoint importing a repository itself is the thing banned.
+allow_indirect_imports = True
+
+[importlinter:contract:services-know-no-http]
+name = Services know nothing about HTTP
+type = forbidden
+source_modules =
+    app.services
+forbidden_modules =
+    fastapi
+    starlette
+
+[importlinter:contract:domain-is-pure]
+name = Domain performs no IO
+type = forbidden
+source_modules =
+    app.domain
+forbidden_modules =
+    fastapi
+    starlette
+    sqlalchemy
+    httpx
+    redis
+    celery
+    app.api
+    app.services
+    app.repositories
+    app.models
+    app.db
+    app.core.config
+
+[importlinter:contract:workers-use-services]
+name = Workers call services, not repositories
+type = forbidden
+source_modules =
+    app.workers
+forbidden_modules =
+    app.repositories
+    sqlalchemy
+allow_indirect_imports = True

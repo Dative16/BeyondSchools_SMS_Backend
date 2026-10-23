@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: bs_sms
+          POSTGRES_USER: bs_sms
+          POSTGRES_PASSWORD: bs_sms
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-retries 10
+        ports: ["5432:5432"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install ".[dev]"
+
+      # Runs before the tests on purpose: a layering break is cheaper to fix
+      # the minute it is written than after a feature is built on top of it.
+      - name: Architecture contracts
+        run: lint-imports
+
+      - name: Lint
+        run: ruff check app tests
+      - name: Types
+        run: mypy app
+      - name: Tests
+        run: pytest -q
+        env:
+          SECRET_KEY: ci
+          POSTGRES_HOST: localhost
+          POSTGRES_DB: bs_sms
+          POSTGRES_USER: bs_sms
+          POSTGRES_PASSWORD: bs_sms
+          REDIS_URL: redis://localhost:6379/0
+          CELERY_BROKER_URL: redis://localhost:6379/1
+          CELERY_RESULT_BACKEND: redis://localhost:6379/2
+          JWT_ISSUER: http://localhost
+          JWT_PRIVATE_KEY_PATH: /tmp/jwt_private.pem
+          JWT_PUBLIC_KEY_PATH: /tmp/jwt_public.pem

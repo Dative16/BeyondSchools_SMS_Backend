@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+*.sqlite3
+.DS_Store
+
+# A TLS-intercepting network's root CA, used for builds on one machine only.
+docker/local-ca.pem

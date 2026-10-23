@@ -1,0 +1,65 @@
+[project]
+name = "beyondschools-sms-api"
+version = "0.1.0"
+description = "BeyondSchools school management system - API"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "pydantic>=2.9",
+  "pydantic-settings>=2.6",
+  "sqlalchemy[asyncio]>=2.0.36",
+  "asyncpg>=0.30",
+  "alembic>=1.14",
+  "redis>=5.2",
+  "celery>=5.4",
+  "httpx>=0.28",
+  "python-multipart>=0.0.12",
+  # bcrypt directly, not passlib: passlib 1.7.4 is unmaintained and breaks
+  # against bcrypt 5.x (it hands hashpw a config string longer than 72 bytes).
+  # See app/core/security.py, which is the only place either is used.
+  "bcrypt>=4.2",
+  "authlib>=1.3",
+  "cryptography>=43",
+  "python-dateutil>=2.9",
+  "structlog>=24.4",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "pytest-cov>=6.0",
+  "ruff>=0.8",
+  "mypy>=1.13",
+  "types-python-dateutil",
+  "factory-boy>=3.3",
+  "import-linter>=2.1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "S", "C4", "SIM"]
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+# Demo data wants readable, reproducible randomness, not a CSPRNG.
+"scripts/seed_demo.py" = ["S311"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+
+# Celery ships no type information. Ignoring it here is narrower than
+# relaxing strict mode for the workers package.
+[[tool.mypy.overrides]]
+module = ["celery.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

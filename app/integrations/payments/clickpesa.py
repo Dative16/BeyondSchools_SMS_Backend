@@ -1,0 +1,1 @@
+"""clickpesa PaymentProvider adapter."""

@@ -1,0 +1,1 @@
+"""azampay PaymentProvider adapter."""

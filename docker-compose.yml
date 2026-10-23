@@ -1,0 +1,73 @@
+name: bs-sms-api
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bs_sms}
+      POSTGRES_USER: ${POSTGRES_USER:-bs_sms}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bs_sms}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bs_sms}"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      target: dev
+      secrets: [extra_ca]
+    env_file: [.env]
+    volumes:
+      - ./:/srv
+    ports: ["8000:8000"]
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  worker:
+    build:
+      context: .
+      target: dev
+      secrets: [extra_ca]
+    env_file: [.env]
+    volumes:
+      - ./:/srv
+    command: celery -A app.workers.celery_app worker -l info
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  beat:
+    build:
+      context: .
+      target: dev
+      secrets: [extra_ca]
+    env_file: [.env]
+    volumes:
+      - ./:/srv
+    command: celery -A app.workers.celery_app beat -l info
+    depends_on:
+      redis: {condition: service_healthy}
+
+volumes:
+  pgdata:
+
+# Only needed where the network re-signs TLS and pip cannot verify pypi.org
+# from inside the build. Set EXTRA_CA_FILE to that network's root CA; the
+# default is an empty placeholder, so this is a no-op everywhere else.
+secrets:
+  extra_ca:
+    file: ${EXTRA_CA_FILE:-./docker/extra-ca.pem}
