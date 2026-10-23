@@ -1,0 +1,7 @@
+# Both services run on Linux. Normalise to LF in the repo so a Windows
+# checkout cannot put CRLF into a Dockerfile, a migration or a shell script.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.woff2 binary
+*.pem -text
