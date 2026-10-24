@@ -86,11 +86,16 @@ app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 # --------------------------------------------------------------------------
 # Local document storage
 # --------------------------------------------------------------------------
-# Mounted only when documents are kept on disk, which is development and the
-# test suite. In production STORAGE_PROVIDER is r2 and these routes do not
-# exist at all — the client talks to Cloudflare directly, and there is no
-# file-serving path in this service to get wrong.
-if settings.STORAGE_PROVIDER == "local" and settings.ENVIRONMENT != "production":
+# Mounted outside production only, where documents may be kept on disk. In
+# production the client talks to Cloudflare directly and these routes do not
+# exist at all, so there is no file-serving path in this service to get wrong.
+#
+# The condition is the environment rather than the provider, because the
+# provider can change after import — the test suite pins documents to a
+# temporary directory so it never touches the real bucket, and a route that
+# had already decided not to exist would leave it nowhere to upload to. The
+# handlers refuse anyway when the configured store is not the local one.
+if settings.ENVIRONMENT != "production":
     from fastapi import HTTPException, Query, Request, Response, status
 
     from app.integrations.storage import get_object_store

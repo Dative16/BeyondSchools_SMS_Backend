@@ -11,7 +11,7 @@ proves isolation must read through the second one.
 """
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import date
 from uuid import UUID, uuid4
 
@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from alembic import command
 from app.core.config import settings
+from app.integrations.storage import get_object_store
 
 
 async def _ensure_app_role() -> None:
@@ -66,6 +67,24 @@ def migrated_database() -> None:
     asyncio.run(_ensure_app_role())
     config = Config("alembic.ini")
     command.upgrade(config, "head")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _documents_stay_local(tmp_path_factory) -> Iterator[None]:
+    """Tests never touch the real bucket.
+
+    Production runs on Cloudflare R2, and .env is configured for it — so
+    without this the suite would upload to a live bucket, leave objects
+    behind, and refuse to run at all in CI where there are no credentials.
+    Documents go to a temporary directory instead, through the same protocol
+    the R2 adapter implements.
+    """
+    root = tmp_path_factory.mktemp("documents")
+    settings.STORAGE_PROVIDER = "local"
+    settings.STORAGE_LOCAL_PATH = str(root)
+    get_object_store.cache_clear()
+    yield
+    get_object_store.cache_clear()
 
 
 @pytest.fixture(autouse=True)

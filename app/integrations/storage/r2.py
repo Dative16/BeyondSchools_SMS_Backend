@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import httpx
-from botocore.auth import SigV4QueryAuth
+from botocore.auth import S3SigV4QueryAuth
 from botocore.awsrequest import AWSRequest
 from botocore.credentials import Credentials
 
@@ -68,7 +68,15 @@ class R2ObjectStore(ObjectStore):
         headers: dict[str, str] | None = None,
     ) -> str:
         request = AWSRequest(method=method, url=self._url_for(object_key), headers=headers or {})
-        SigV4QueryAuth(self._credentials, SERVICE, R2_REGION, expires=expires_in).add_auth(request)
+        # S3's own query signer, not the generic one. Two differences decide
+        # whether Cloudflare accepts the signature: it leaves the URL path
+        # unnormalised, so a key with slashes in it signs as written, and it
+        # signs UNSIGNED-PAYLOAD rather than hashing a body that does not
+        # exist yet. The generic signer hashes the empty string instead, and
+        # every upload comes back SignatureDoesNotMatch.
+        S3SigV4QueryAuth(
+            self._credentials, SERVICE, R2_REGION, expires=expires_in
+        ).add_auth(request)
         return str(request.url)
 
     def presign_upload(
