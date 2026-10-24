@@ -275,14 +275,36 @@ presigned links precisely so that opening one is an act with a permission
 attached.
 
 **Set a CORS policy on the bucket.** The browser uploads straight to R2, so
-without it uploads succeed from `make storage-check` and fail in the app, which
-is a confusing hour. On the bucket's settings:
+without it uploads succeed from `make storage-check` and fail in the app —
+which is a confusing hour, because the server-side check never crosses an
+origin and so can never catch it. **R2 > the bucket > Settings > CORS Policy**:
 
+```json
+[
+  {
+    "AllowedOrigins": ["http://localhost:5173", "https://*.beyondschools.co.tz"],
+    "AllowedMethods": ["GET", "PUT"],
+    "AllowedHeaders": ["content-type"],
+    "ExposeHeaders": ["etag"],
+    "MaxAgeSeconds": 3600
+  }
+]
 ```
-AllowedOrigins: the web app's origin
-AllowedMethods: PUT, GET
-AllowedHeaders: content-type
+
+`content-type` is the line people leave out. The presigned PUT *signs* the
+Content-Type, so the browser has to send that header, which turns the upload
+into a preflighted request — and the `OPTIONS` fails with nothing useful in the
+console. `etag` is exposed so the client can read back what arrived.
+
+To check it, send the preflight a browser would:
+
+```bash
+curl -i -X OPTIONS "<a presigned PUT url>"   -H 'Origin: http://localhost:5173'   -H 'Access-Control-Request-Method: PUT'   -H 'Access-Control-Request-Headers: content-type'
 ```
+
+`204` with `Access-Control-Allow-Origin` echoing the origin means it is on.
+Worth also sending an origin that should not be allowed: a policy wide enough
+to answer `https://anything.example.com` is a policy that lets any site upload.
 
 Three properties worth keeping:
 
