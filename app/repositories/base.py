@@ -12,6 +12,8 @@ from typing import Protocol, Self
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.tenancy import rebind
+
 
 class UnitOfWork(Protocol):
     """One transaction, several repositories, committed or rolled back together."""
@@ -50,7 +52,17 @@ class SqlAlchemyUnitOfWork:
             await self.rollback()
 
     async def commit(self) -> None:
+        """Commit, then put the tenant binding back.
+
+        The binding is transaction-local by design — see
+        `app.core.tenancy.rebind` — so a service that commits halfway through
+        its work would carry on unscoped. Doing this here, once, is what lets
+        every service commit as often as the sequence genuinely needs to
+        without each one having to remember.
+        """
         await self._session.commit()
+        await rebind(self._session)
 
     async def rollback(self) -> None:
         await self._session.rollback()
+        await rebind(self._session)

@@ -460,6 +460,7 @@ async def seed_children(session: AsyncSession, school_id: UUID, ids: Ids) -> Non
                 if sibling_of is None:
                     guardian_id = uuid4()
                     phone = f"07{random.randint(10, 89)}{random.randint(100000, 999999)}"
+                    guardian_name = f"{random.choice(FIRST_NAMES_F + FIRST_NAMES_M)} {surname}"
                     await session.execute(
                         text(
                             "INSERT INTO guardian (id, school_id, full_name, phone, locale, "
@@ -469,11 +470,32 @@ async def seed_children(session: AsyncSession, school_id: UUID, ids: Ids) -> Non
                         {
                             "id": guardian_id,
                             "school_id": school_id,
-                            "name": f"{random.choice(FIRST_NAMES_F + FIRST_NAMES_M)} {surname}",
+                            "name": guardian_name,
                             "phone": phone,
                         },
                     )
                     guardian_pool.append((guardian_id, phone))
+
+                    # A login per guardian, with no password: they sign in with
+                    # a one-time code. This is the account a fee reminder's
+                    # short link lands on, and the one that carries a child
+                    # across to the AI platform. Created only for a new
+                    # guardian — a sibling shares the one that already exists.
+                    await session.execute(
+                        text(
+                            "INSERT INTO app_user (id, school_id, full_name, phone, role, "
+                            " must_change_password, is_active, failed_logins, "
+                            " guardian_id, created_at, updated_at) "
+                            "VALUES (gen_random_uuid(), :school_id, :name, :phone, "
+                            " 'guardian', false, true, 0, :guardian_id, now(), now())"
+                        ),
+                        {
+                            "school_id": school_id,
+                            "name": guardian_name,
+                            "phone": phone,
+                            "guardian_id": guardian_id,
+                        },
+                    )
                 else:
                     guardian_id = sibling_of[0]
 

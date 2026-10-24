@@ -33,3 +33,13 @@ openapi: ## Dump the OpenAPI schema for the web repo
 	$(COMPOSE) exec -T api python -m scripts.dump_openapi > openapi.json
 
 .PHONY: help up down logs shell migrate revision seed test lint arch fmt openapi
+
+keys: ## Generate the local RS256 signing keypair (gitignored)
+	@mkdir -p secrets
+	@test -f secrets/jwt_private.pem || openssl genpkey -algorithm RSA \
+		-out secrets/jwt_private.pem -pkeyopt rsa_keygen_bits:2048 2>/dev/null
+	@test -f secrets/jwt_public.pem || openssl rsa -pubout \
+		-in secrets/jwt_private.pem -out secrets/jwt_public.pem 2>/dev/null
+	@echo "secrets/jwt_private.pem and secrets/jwt_public.pem ready"
+
+.PHONY: keys

@@ -15,8 +15,8 @@ or from a manual entry that records who made it and why, and `applied` moves
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
 from enum import StrEnum
+from typing import Any
 
 from sqlalchemy import (
     Boolean,

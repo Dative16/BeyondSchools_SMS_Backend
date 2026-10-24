@@ -68,6 +68,23 @@ def migrated_database() -> None:
     command.upgrade(config, "head")
 
 
+@pytest.fixture(autouse=True)
+async def _dispose_app_engine() -> AsyncIterator[None]:
+    """Hand the application's engine back between tests.
+
+    `app/db/session.py` builds its engine once, at import, which is right for a
+    server and wrong for a test suite: each test runs on its own event loop,
+    and a pooled connection opened on a loop that has since closed fails with
+    "attached to a different loop". Disposing after each test costs a few
+    milliseconds and keeps the tests exercising the real engine — the one whose
+    restricted role the policies apply to — rather than a stand-in.
+    """
+    yield
+    from app.db.session import engine as app_engine
+
+    await app_engine.dispose()
+
+
 @pytest.fixture
 async def owner_session() -> AsyncIterator[AsyncSession]:
     """Connects as the table owner. Arranges data; proves nothing."""

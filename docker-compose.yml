@@ -32,6 +32,9 @@ services:
     env_file: [.env]
     volumes:
       - ./:/srv
+      # The RS256 signing keypair. `make keys` writes it; it is gitignored,
+      # and production mounts the platform's secret at the same path.
+      - ./secrets:/run/secrets:ro
     ports: ["8000:8000"]
     depends_on:
       db: {condition: service_healthy}
@@ -45,6 +48,7 @@ services:
     env_file: [.env]
     volumes:
       - ./:/srv
+      - ./secrets:/run/secrets:ro
     command: celery -A app.workers.celery_app worker -l info
     depends_on:
       db: {condition: service_healthy}

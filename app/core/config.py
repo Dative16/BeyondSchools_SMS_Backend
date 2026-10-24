@@ -47,9 +47,13 @@ class Settings(BaseSettings):
     PAYMENT_PROVIDER: Literal["mock", "selcom", "azampay", "clickpesa"] = "mock"
     PAYMENT_WEBHOOK_SECRET: str = ""
 
+    # SMS is a Phase 1 dependency, not a Phase 3 one: the public application
+    # form cannot verify a phone number without it. Which gateway the pilot
+    # school uses is still open; "mock" logs instead of sending.
     SMS_PROVIDER: str = "mock"
     SMS_SENDER_ID: str = "BEYONDSCH"
     SMS_API_KEY: str = ""
+    SMS_API_SECRET: str = ""
 
     @computed_field  # type: ignore[prop-decorator]
     @property

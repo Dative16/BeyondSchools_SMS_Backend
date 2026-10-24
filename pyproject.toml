@@ -19,7 +19,9 @@ dependencies = [
   # against bcrypt 5.x (it hands hashpw a config string longer than 72 bytes).
   # See app/core/security.py, which is the only place either is used.
   "bcrypt>=4.2",
-  "authlib>=1.3",
+  # joserfc, not authlib: authlib.jose is deprecated in favour of it, and this
+  # is the root of trust for both applications. See app/core/security.py.
+  "joserfc>=1.0",
   "cryptography>=43",
   "python-dateutil>=2.9",
   "structlog>=24.4",

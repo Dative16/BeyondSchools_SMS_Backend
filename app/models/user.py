@@ -16,7 +16,6 @@ The table is `app_user` rather than `user`, which is reserved in PostgreSQL.
 
 import uuid
 from datetime import datetime
-from enum import StrEnum
 
 from sqlalchemy import (
     Boolean,
@@ -32,6 +31,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.domain.identity import OtpPurpose
 from app.domain.roles import Role
 from app.models.base import Base, Timestamped, UUIDPrimaryKey, pg_enum
 
@@ -136,13 +136,6 @@ class RefreshToken(UUIDPrimaryKey, Base):
     )
     user_agent: Mapped[str | None] = mapped_column(Text)
     ip: Mapped[str | None] = mapped_column(INET)
-
-
-class OtpPurpose(StrEnum):
-    APPLY = "apply"
-    LOGIN = "login"
-    PASSWORD_RESET = "password_reset"  # noqa: S105 - an enum member, not a secret
-    PHONE_CHANGE = "phone_change"
 
 
 class OtpChallenge(UUIDPrimaryKey, Base):

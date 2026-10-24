@@ -8,6 +8,7 @@ token and a webhook.
 
 ```bash
 cp .env.example .env
+make keys
 make up
 make migrate
 make seed
@@ -57,6 +58,37 @@ replayed webhook credits once.
 cohorts sit the PSLE in 2027. `level.order_index` and a per-cohort
 `exit_level_id` on the academic year decide what comes next, and a promotion run
 is reviewable and reversible.
+
+## Signing in
+
+The service is the OIDC issuer for both applications. It signs RS256 access
+tokens and publishes the public half at `/.well-known/jwks.json`, which is how
+aibeyondschools.co.tz validates a token without the two services sharing a
+secret. `make keys` writes the local keypair into `secrets/` (gitignored);
+production mounts the platform's secret at the same path.
+
+| | Audience | Lifetime | Who holds it |
+| --- | --- | --- | --- |
+| Access token | `beyondschools-sms` | 15 minutes | the browser, in memory |
+| Refresh token | — (opaque, hashed) | 14 days | an httpOnly cookie |
+| Handoff token | `aibeyondschools` | 2 minutes | a URL, once |
+
+The audiences are what keep the handoff safe: this API refuses a token minted
+for the AI platform, and the AI platform refuses one minted for this API.
+`tests/unit/test_security.py` asserts both directions.
+
+Three behaviours worth knowing before changing this code:
+
+- **Refresh tokens are single use.** Presenting one twice means two parties
+  hold it, so every session for that user is revoked rather than just that row.
+- **A guardian's handoff names the child.** A guardian with three children has
+  three possible answers, so `student_id` is required and checked against
+  `guardian_student` on every crossing.
+- **Sign-in is scoped by the subdomain; everything after it by the token.**
+  The login lookup runs with no `school_id` filter, like every other query
+  here — the only thing stopping a user signing in through another school's
+  subdomain is that the session was pinned first. There is a test for exactly
+  that.
 
 ## Layout
 

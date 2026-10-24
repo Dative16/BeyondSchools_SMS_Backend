@@ -7,6 +7,9 @@ model file without adding it here is the one mistake in this package that
 fails quietly.
 """
 
+# OtpPurpose lives in app.domain.identity: every layer names it, and the
+# endpoints are not allowed to import app.models at all.
+from app.domain.identity import OtpPurpose
 from app.models.academic import (
     AcademicYear,
     AcademicYearExitLevel,
@@ -37,7 +40,7 @@ from app.models.payment import (
 )
 from app.models.school import School, SchoolSequence, SchoolStatus
 from app.models.student import DocumentKind, Enrolment, Sex, Student, StudentDocument
-from app.models.user import AppUser, OtpChallenge, OtpPurpose, RefreshToken
+from app.models.user import AppUser, OtpChallenge, RefreshToken
 
 #: Tables that hold one school's data and are therefore covered by a row-level
 #: security policy. `school` is here too: a session bound to one school has no

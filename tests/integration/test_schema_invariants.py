@@ -43,7 +43,9 @@ async def school(owner_session):
     group_id = await make_class_group(
         owner_session, school_id=school_id, academic_year_id=year_id, level_id=level_id
     )
-    student_id = await make_student(owner_session, school_id=school_id, admission_no=f"M/{uuid4().hex[:8]}")
+    student_id = await make_student(
+        owner_session, school_id=school_id, admission_no=f"M/{uuid4().hex[:8]}"
+    )
     enrolment_id = await make_enrolment(
         owner_session,
         school_id=school_id,

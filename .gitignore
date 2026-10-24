@@ -15,3 +15,11 @@ htmlcov/
 
 # A TLS-intercepting network's root CA, used for builds on one machine only.
 docker/local-ca.pem
+
+# The local signing keypair. Production keys come from the platform's secret
+# store; a key in git is a key that has to be rotated.
+secrets/
+
+# Generated from the running app by `make openapi`, consumed by the web repo.
+# A stale copy in git is worse than no copy.
+openapi.json
