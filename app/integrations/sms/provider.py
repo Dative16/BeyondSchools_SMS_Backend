@@ -11,6 +11,7 @@ dropping a parent's one-time code.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from typing import Any
 
@@ -53,14 +54,22 @@ class LoggingSmsSender:
 class BeemSmsSender:
     """Beem Africa's bulk SMS API.
 
-    Basic auth over HTTPS, one POST per send. Nothing here retries: a retry
-    that duplicates a fee reminder annoys a parent, and a retry that duplicates
-    a one-time code invalidates the first one. The caller decides, with the
-    delivery log in front of it.
+    The wire format follows the implementation already in production on the
+    .NET side, down to three details that look like noise and are not:
+
+    * the body is serialised with ASCII-escaped JSON and sent as ASCII bytes,
+      so a Kiswahili message with a non-ASCII character travels as an escape
+      sequence rather than as UTF-8 the gateway may mishandle;
+    * `encoding` is the string "0", not the number 0;
+    * the Basic credentials are base64 of ISO-8859-1 bytes.
+
+    Nothing here retries. A retry that duplicates a fee reminder annoys a
+    parent; a retry that duplicates a one-time code invalidates the first one.
+    The caller decides, with the delivery log in front of it.
     """
 
     name = "beem"
-    BASE_URL = "https://apisms.beem.africa/v1"
+    DELIVERY_REPORTS_URL = "https://dlrapi.beem.africa/public/v1/delivery-reports"
 
     def __init__(
         self,
@@ -68,69 +77,96 @@ class BeemSmsSender:
         api_key: str,
         secret_key: str,
         sender_id: str,
-        timeout_seconds: float = 10.0,
+        base_url: str,
+        timeout_seconds: float = 15.0,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         if not api_key or not secret_key:
             raise ValueError("SMS_API_KEY and SMS_API_SECRET are required for the beem provider")
-        self._auth = base64.b64encode(f"{api_key}:{secret_key}".encode()).decode()
+        credentials = f"{api_key}:{secret_key}".encode("iso-8859-1")
+        self._auth = base64.b64encode(credentials).decode("ascii")
         self._sender_id = sender_id
+        self._base_url = base_url
         self._timeout = timeout_seconds
+        #: Only set by tests, which assert the wire format rather than send.
+        self._transport = transport
 
     async def send(self, message: SmsMessage) -> SmsResult:
         payload: dict[str, Any] = {
             "source_addr": self._sender_id,
-            "encoding": 0,
+            "schedule_time": "",
+            "encoding": "0",
             "message": message.body,
-            "recipients": [{"recipient_id": 1, "dest_addr": to_e164(message.to).lstrip("+")}],
+            "recipients": [
+                {"recipient_id": 1, "dest_addr": to_e164(message.to).lstrip("+")}
+            ],
         }
+        body_bytes = json.dumps(payload).encode("ascii")
+
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with httpx.AsyncClient(
+                timeout=self._timeout, transport=self._transport
+            ) as client:
                 response = await client.post(
-                    f"{self.BASE_URL}/send",
-                    json=payload,
-                    headers={"Authorization": f"Basic {self._auth}"},
+                    self._base_url,
+                    content=body_bytes,
+                    headers={
+                        "Authorization": f"Basic {self._auth}",
+                        "Content-Type": "application/json",
+                    },
                 )
         except httpx.HTTPError as exc:
             # A gateway being unreachable is a delivery failure, not a crash:
             # the reminder run has 399 more messages to get through.
+            logger.warning("sms send failed to reach the gateway: %s", exc)
             return SmsResult(None, SmsState.FAILED, {"error": str(exc)}, error=str(exc))
 
-        body: dict[str, Any]
+        parsed: dict[str, Any]
         try:
-            body = response.json()
+            parsed = response.json()
         except ValueError:
-            body = {"status_code": response.status_code, "text": response.text[:500]}
+            parsed = {"status_code": response.status_code, "text": response.text[:500]}
 
-        if response.is_success:
+        # Beem answers 200 with `successful: false` for a rejected message —
+        # an unapproved sender ID, or no credit — so the status code alone is
+        # not the answer.
+        accepted = response.is_success and parsed.get("successful") is not False
+        if accepted:
             return SmsResult(
-                external_ref=str(body.get("request_id") or ""),
+                external_ref=str(parsed.get("request_id") or ""),
                 state=SmsState.SENT,
-                raw=body,
+                raw=parsed,
             )
-        return SmsResult(
-            external_ref=None,
-            state=SmsState.FAILED,
-            raw=body,
-            error=str(body.get("message") or response.status_code),
-        )
+
+        error = str(parsed.get("message") or parsed.get("error") or response.status_code)
+        logger.warning("sms rejected by the gateway: %s", error)
+        return SmsResult(external_ref=None, state=SmsState.FAILED, raw=parsed, error=error)
 
     async def status(self, external_ref: str) -> SmsResult:
+        """Ask for a delivery report.
+
+        A gateway that cannot answer leaves the message QUEUED rather than
+        calling it failed: "we do not know yet" and "it did not arrive" are
+        different things to show a bursar chasing a fee reminder.
+        """
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with httpx.AsyncClient(
+                timeout=self._timeout, transport=self._transport
+            ) as client:
                 response = await client.get(
-                    f"{self.BASE_URL}/delivery-reports",
+                    self.DELIVERY_REPORTS_URL,
                     params={"request_id": external_ref},
                     headers={"Authorization": f"Basic {self._auth}"},
                 )
-            body = response.json()
+            parsed = response.json()
         except (httpx.HTTPError, ValueError) as exc:
             return SmsResult(external_ref, SmsState.QUEUED, {"error": str(exc)}, error=str(exc))
 
-        delivered = str(body.get("status", "")).upper() == "DELIVRD"
+        delivered = str(parsed.get("status", "")).upper() in ("DELIVRD", "DELIVERED")
         return SmsResult(
             external_ref=external_ref,
             state=SmsState.DELIVERED if delivered else SmsState.SENT,
-            raw=body,
+            raw=parsed,
         )
 
 
@@ -149,6 +185,7 @@ def get_sms_sender() -> SmsSender:
             api_key=settings.SMS_API_KEY,
             secret_key=settings.SMS_API_SECRET,
             sender_id=settings.SMS_SENDER_ID,
+            base_url=settings.SMS_BASE_URL,
         )
     raise ValueError(
         f"SMS_PROVIDER={provider!r} has no adapter. Implement one in "

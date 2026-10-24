@@ -23,3 +23,10 @@ secrets/
 # Generated from the running app by `make openapi`, consumed by the web repo.
 # A stale copy in git is worse than no copy.
 openapi.json
+
+# Provider credentials and reference material kept beside the project.
+# Secrets belong in .env (which is already ignored), never in a file that a
+# `git add -A` could sweep up.
+beam settings.txt
+*settings.txt
+*.cs.txt

@@ -24,6 +24,7 @@ right for a seeding script and wrong for anything the application serves.
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -648,6 +649,43 @@ async def _raise_term_invoice(
         )
 
 
+async def attach_test_handset(session: AsyncSession, school_id: UUID) -> str | None:
+    """Give one guardian a real phone number, if DEMO_GUARDIAN_PHONE is set.
+
+    Without this, every re-seed invents 420 fictional numbers and nobody can
+    actually receive a one-time code. The number stays in .env rather than in
+    this file: it is somebody's handset, not demo data.
+    """
+    phone = os.environ.get("DEMO_GUARDIAN_PHONE", "").strip()
+    if not phone:
+        return None
+
+    row = (
+        await session.execute(
+            text(
+                "SELECT g.id AS guardian_id, u.id AS user_id, s.first_name, s.surname "
+                "  FROM guardian g "
+                "  JOIN app_user u ON u.guardian_id = g.id "
+                "  JOIN guardian_student gs ON gs.guardian_id = g.id "
+                "  JOIN student s ON s.id = gs.student_id "
+                " WHERE g.school_id = :school_id "
+                " LIMIT 1"
+            ),
+            {"school_id": school_id},
+        )
+    ).one()
+
+    await session.execute(
+        text("UPDATE guardian SET phone = :phone WHERE id = :id"),
+        {"phone": phone, "id": row.guardian_id},
+    )
+    await session.execute(
+        text("UPDATE app_user SET phone = :phone WHERE id = :id"),
+        {"phone": phone, "id": row.user_id},
+    )
+    return f"{phone} signs in as the guardian of {row.first_name} {row.surname}"
+
+
 async def seed_suspense_payment(session: AsyncSession, school_id: UUID) -> None:
     """Money that arrived with nothing to match it.
 
@@ -831,9 +869,12 @@ async def main() -> None:
         await seed_children(session, school_id, ids)
         await seed_suspense_payment(session, school_id)
         await seed_applications(session, school_id, ids)
+        handset = await attach_test_handset(session, school_id)
         await session.commit()
 
         await report(session, school_id)
+        if handset:
+            print(f"  {handset}")
 
     await engine.dispose()
 

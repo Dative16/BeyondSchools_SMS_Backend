@@ -49,10 +49,20 @@ must set `app.platform_scope` first**, or it will quietly update nothing. The
 two escape hatches are `platform_scope()` and `unscoped()` in
 `app/core/tenancy.py`, and both roll back on the way out.
 
-**2. A balance moves only on a verified callback.** `PaymentProvider`
-(`app/integrations/payments/base.py`) is the only way money enters the ledger,
-plus an explicit audited manual entry. `external_ref` is unique per school, so a
-replayed webhook credits once.
+**2. A balance is never typed in.** `invoice.billed` and `invoice.settled` are
+maintained by trigger from the lines and the payments, and a direct `UPDATE` of
+either is silently discarded — see `tests/integration/test_schema_invariants.py`.
+Money enters the ledger one of two ways: a verified callback through
+`PaymentProvider` (`app/integrations/payments/base.py`), or an explicit manual
+entry that records who made it and why. A correction is a credit note or a
+payment, never an edit.
+
+**Phase 1 runs on manual entry.** `PAYMENT_PROVIDER=manual` means no aggregator
+is wired up: the bursar records each payment, and the callback path stays
+dormant. Two consequences worth knowing — a deposit that converts an
+application into an enrolment is a bursar's audited entry rather than a
+webhook, and `external_ref` is still unique per school, so the idempotency
+guarantee is already in place for the day an aggregator is chosen.
 
 **3. The level ladder is data, not code.** Tanzania is mid-reform: two primary
 cohorts sit the PSLE in 2027. `level.order_index` and a per-cohort
@@ -76,6 +86,20 @@ production mounts the platform's secret at the same path.
 The audiences are what keep the handoff safe: this API refuses a token minted
 for the AI platform, and the AI platform refuses one minted for this API.
 `tests/unit/test_security.py` asserts both directions.
+
+Codes go out over Beem Africa (`SMS_PROVIDER=beem`). The sender ID has to be
+one already approved on the account, or every send comes back `200` with
+`successful: false` — which is why the adapter treats that as a failure rather
+than trusting the status code. `SMS_PROVIDER=mock` logs the message instead of
+sending it, and is the default for tests. Set `DEMO_GUARDIAN_PHONE` in `.env`
+to a real handset and `make seed` will point one guardian at it, so somebody
+can actually receive a code.
+
+The wire format in `app/integrations/sms/provider.py` follows the
+implementation already in production on the .NET side, including three details
+that look like noise and are not: an ASCII-escaped body, `encoding` as the
+string `"0"`, and Basic credentials built from ISO-8859-1 bytes.
+`tests/unit/test_sms_gateway.py` pins all three.
 
 Three behaviours worth knowing before changing this code:
 

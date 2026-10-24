@@ -44,16 +44,26 @@ class Settings(BaseSettings):
     AI_PLATFORM_API_KEY: str = ""
     AI_PLATFORM_WEBHOOK_SECRET: str = ""
 
-    PAYMENT_PROVIDER: Literal["mock", "selcom", "azampay", "clickpesa"] = "mock"
+    # "manual" means there is no aggregator: a bursar records each payment,
+    # named and audited, and the callback path stays dormant. That is the
+    # Phase 1 decision, and the reason app/integrations/payments/ still holds
+    # three unimplemented adapters — the protocol is ready for the day an
+    # aggregator is chosen, and nothing above it has to change.
+    PAYMENT_PROVIDER: Literal["manual", "mock", "selcom", "azampay", "clickpesa"] = "manual"
     PAYMENT_WEBHOOK_SECRET: str = ""
 
     # SMS is a Phase 1 dependency, not a Phase 3 one: the public application
     # form cannot verify a phone number without it. Which gateway the pilot
     # school uses is still open; "mock" logs instead of sending.
     SMS_PROVIDER: str = "mock"
+    #: Beem calls this the source address. It must be a sender ID that has
+    #: already been approved on the account, or every send is rejected.
     SMS_SENDER_ID: str = "BEYONDSCH"
     SMS_API_KEY: str = ""
     SMS_API_SECRET: str = ""
+    #: The full send endpoint, not a base path: Beem's own settings name it
+    #: that way and it keeps sandbox and production a one-line change.
+    SMS_BASE_URL: str = "https://apisms.beem.africa/v1/send"
 
     @computed_field  # type: ignore[prop-decorator]
     @property

@@ -21,7 +21,14 @@ RUN --mount=type=secret,id=extra_ca \
     if [ -s /run/secrets/extra_ca ]; then \
       cat /run/secrets/extra_ca >> /etc/ssl/certs/ca-certificates.crt; \
     fi \
- && pip install --upgrade pip && pip install ".[dev]"
+ && pip install --upgrade pip && pip install ".[dev]" \
+ # httpx verifies against certifi's bundle rather than the system one, so the
+ # same CA has to go there too — otherwise every outbound call (the SMS
+ # gateway, the payment aggregator, the AI platform) fails verification at
+ # runtime even though the build succeeded.
+ && if [ -s /run/secrets/extra_ca ]; then \
+      cat /run/secrets/extra_ca >> "$(python -c 'import certifi; print(certifi.where())')"; \
+    fi
 
 FROM deps AS dev
 COPY . .
