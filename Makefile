@@ -43,3 +43,8 @@ keys: ## Generate the local RS256 signing keypair (gitignored)
 	@echo "secrets/jwt_private.pem and secrets/jwt_public.pem ready"
 
 .PHONY: keys
+
+storage-check: ## Prove the configured object store works, end to end
+	$(COMPOSE) exec api python -m scripts.check_storage
+
+.PHONY: storage-check

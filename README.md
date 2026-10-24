@@ -143,6 +143,44 @@ GET  /students/{id}/documents/{id}/url     -> a 5-minute link to read it
 exists. Production sets `STORAGE_PROVIDER=r2` and those routes are not mounted
 at all.
 
+### Pointing it at R2
+
+Four settings, from the Cloudflare dashboard: **R2 > Manage R2 API Tokens >
+Create API Token**, with **Object Read & Write** scoped to the one bucket.
+
+```
+STORAGE_PROVIDER=r2
+R2_ACCOUNT_ID=...          # R2 overview, or the endpoint URL
+R2_ACCESS_KEY_ID=...       # shown once, when the token is created
+R2_SECRET_ACCESS_KEY=...   # shown once, when the token is created
+R2_BUCKET=...
+```
+
+Then `make storage-check`, which does a real round trip — presign, upload,
+HEAD, download, delete — and leaves nothing behind. Worth running once before
+a deploy: the unit tests prove our signatures are correct, and only Cloudflare
+can say they are accepted.
+
+Two things to get right that are easy to miss:
+
+**Leave the public development URL disabled.** The `pub-<hash>.r2.dev` address
+is a read-only public front door, and it cannot accept an upload — presigned
+PUTs go to the S3 API endpoint instead. Enabling it would also make every
+object world-readable to anyone who has the key, which for children's birth
+certificates is not a trade worth making. Reads go through short-lived
+presigned links precisely so that opening one is an act with a permission
+attached.
+
+**Set a CORS policy on the bucket.** The browser uploads straight to R2, so
+without it uploads succeed from `make storage-check` and fail in the app, which
+is a confusing hour. On the bucket's settings:
+
+```
+AllowedOrigins: the web app's origin
+AllowedMethods: PUT, GET
+AllowedHeaders: content-type
+```
+
 Three properties worth keeping:
 
 - **The bucket is private.** These are children's birth certificates. Reads go
