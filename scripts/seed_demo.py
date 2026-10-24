@@ -90,16 +90,52 @@ TUITION_BY_ORDER = {
 }
 
 FIRST_NAMES_F = [
-    "Neema", "Joyce", "Zawadi", "Upendo", "Glory", "Happiness", "Rehema",
-    "Amina", "Tumaini", "Furaha", "Asha", "Grace", "Imani", "Sifa",
+    "Neema",
+    "Joyce",
+    "Zawadi",
+    "Upendo",
+    "Glory",
+    "Happiness",
+    "Rehema",
+    "Amina",
+    "Tumaini",
+    "Furaha",
+    "Asha",
+    "Grace",
+    "Imani",
+    "Sifa",
 ]
 FIRST_NAMES_M = [
-    "Baraka", "Amani", "Frank", "Emmanuel", "Juma", "Daniel", "Peter",
-    "Elia", "Godfrey", "Isaya", "Nuru", "Said", "Hamisi", "Tumaini",
+    "Baraka",
+    "Amani",
+    "Frank",
+    "Emmanuel",
+    "Juma",
+    "Daniel",
+    "Peter",
+    "Elia",
+    "Godfrey",
+    "Isaya",
+    "Nuru",
+    "Said",
+    "Hamisi",
+    "Tumaini",
 ]
 SURNAMES = [
-    "Mwanjala", "Shayo", "Mushi", "Kimaro", "Mbwana", "Lyimo", "Massawe",
-    "Ndossi", "Mollel", "Swai", "Marealle", "Kileo", "Mwakalebela", "Urassa",
+    "Mwanjala",
+    "Shayo",
+    "Mushi",
+    "Kimaro",
+    "Mbwana",
+    "Lyimo",
+    "Massawe",
+    "Ndossi",
+    "Mollel",
+    "Swai",
+    "Marealle",
+    "Kileo",
+    "Mwakalebela",
+    "Urassa",
 ]
 
 STAFF = [
@@ -348,9 +384,7 @@ async def seed_staff(
     return staff
 
 
-async def seed_fees(
-    session: AsyncSession, school_id: UUID, ids: Ids
-) -> dict[str, UUID]:
+async def seed_fees(session: AsyncSession, school_id: UUID, ids: Ids) -> dict[str, UUID]:
     """A published structure per level.
 
     Standard 6's is left as a draft on purpose: the dashboard's "fee structure
@@ -686,6 +720,210 @@ async def attach_test_handset(session: AsyncSession, school_id: UUID) -> str | N
     return f"{phone} signs in as the guardian of {row.first_name} {row.surname}"
 
 
+#: What Mwenge asks for. Taken from what a Tanzanian primary school actually
+#: demands at registration: cheti cha kuzaliwa, picha za pasipoti, fomu ya
+#: usajili, and the extra paperwork a boarder needs.
+DOCUMENT_REQUIREMENTS = [
+    ("birth_certificate", "Cheti cha kuzaliwa (birth certificate)", True, False, True, 0),
+    (
+        "passport_photo",
+        "Picha mbili za pasipoti (two passport photographs)",
+        True,
+        False,
+        False,
+        1,
+    ),
+    (
+        "registration_form",
+        "Fomu ya usajili, imesainiwa (signed registration form)",
+        True,
+        False,
+        False,
+        2,
+    ),
+    ("report_card", "Ripoti ya mwisho ya shule (last report card)", False, False, True, 3),
+    ("transfer_letter", "Barua ya uhamisho (transfer letter)", False, False, False, 4),
+    ("immunisation_card", "Kadi ya chanjo (immunisation card)", True, True, False, 5),
+    (
+        "medical",
+        "Fomu ya afya kwa mwanafunzi wa bweni (boarder health form)",
+        True,
+        True,
+        False,
+        6,
+    ),
+]
+
+#: Two fields Mwenge needs and the system does not model: a uniform size and a
+#: dormitory bed. Neither drives a rule, so neither earns a column — which is
+#: the whole test for whether something belongs here.
+CUSTOM_FIELDS = [
+    {
+        "key": "uniform_size",
+        "label": "Uniform size",
+        "kind": "choice",
+        "scope": "student",
+        "options": ["4", "6", "8", "10", "12", "14", "S", "M", "L"],
+        "required": False,
+        "sensitive": False,
+        "help": "Measured at the uniform shop, not guessed from the age.",
+    },
+    {
+        "key": "bed_number",
+        "label": "Bed number",
+        "kind": "text",
+        "scope": "enrolment",
+        "options": None,
+        "required": False,
+        "sensitive": False,
+        "help": "Dormitory bed, for boarders only. Changes every year.",
+    },
+]
+
+BUS_ROUTES = [
+    ("Majengo", "Majengo A"),
+    ("Kiboriloni", "Kiboriloni"),
+    ("Shanty Town", "Shanty Town"),
+]
+
+
+async def seed_registration_settings(session: AsyncSession, school_id: UUID) -> None:
+    """The school's own checklist and its two custom fields.
+
+    Seeded because the admissions queue and the student profile both read
+    them, and a screen built against an empty checklist is a screen whose
+    checklist has never been looked at.
+    """
+    for kind, label, required, boarders_only, at_application, order in DOCUMENT_REQUIREMENTS:
+        await session.execute(
+            text(
+                "INSERT INTO document_requirement (id, school_id, kind, label, is_required, "
+                " boarders_only, ask_at_application, sort_order, is_active, "
+                " created_at, updated_at) "
+                "VALUES (gen_random_uuid(), :school_id, :kind, :label, :required, "
+                " :boarders_only, :at_application, :order, true, now(), now())"
+            ),
+            {
+                "school_id": school_id,
+                "kind": kind,
+                "label": label,
+                "required": required,
+                "boarders_only": boarders_only,
+                "at_application": at_application,
+                "order": order,
+            },
+        )
+
+    for index, field_def in enumerate(CUSTOM_FIELDS):
+        await session.execute(
+            text(
+                "INSERT INTO school_field (id, school_id, key, label, help_text, kind, scope, "
+                " options, required_at_registration, is_sensitive, is_active, sort_order, "
+                " created_at, updated_at) "
+                "VALUES (gen_random_uuid(), :school_id, :key, :label, :help, :kind, :scope, "
+                " :options, :required, :sensitive, true, :order, now(), now())"
+            ),
+            {
+                "school_id": school_id,
+                "key": field_def["key"],
+                "label": field_def["label"],
+                "help": field_def["help"],
+                "kind": field_def["kind"],
+                "scope": field_def["scope"],
+                "options": field_def["options"],
+                "required": field_def["required"],
+                "sensitive": field_def["sensitive"],
+                "order": index,
+            },
+        )
+
+
+async def seed_boarders_and_buses(session: AsyncSession, school_id: UUID) -> tuple[int, int]:
+    """Make some of the school board, and put some on a bus.
+
+    Both are per-year facts on the enrolment, so a child who boards this year
+    and goes home next year has two honest rows rather than one overwritten
+    one. Only the upper classes board, which is how these schools work.
+    """
+    boarders = await session.execute(
+        text(
+            "UPDATE enrolment e SET residency = 'boarder', "
+            "       dormitory = CASE WHEN s.sex = 'f' THEN 'Uhuru' ELSE 'Kibo' END "
+            "  FROM student s, class_group cg, level l "
+            " WHERE e.student_id = s.id AND cg.id = e.class_group_id AND l.id = cg.level_id "
+            "   AND e.school_id = :school_id AND l.order_index >= 5 "
+            "   AND right(s.admission_no, 1) IN ('1', '4', '7') "
+            "RETURNING e.id"
+        ),
+        {"school_id": school_id},
+    )
+    boarder_count = len(boarders.all())
+
+    riders = 0
+    for index, (route, stop) in enumerate(BUS_ROUTES):
+        result = await session.execute(
+            text(
+                "UPDATE enrolment e SET uses_transport = true, "
+                "       transport_route = :route, transport_stop = :stop "
+                "  FROM student s "
+                " WHERE e.student_id = s.id AND e.school_id = :school_id "
+                "   AND e.residency = 'day' AND e.uses_transport = false "
+                "   AND right(s.admission_no, 1) = :digit "
+                "RETURNING e.id"
+            ),
+            {
+                "school_id": school_id,
+                "route": route,
+                "stop": stop,
+                "digit": str(index + 2),
+            },
+        )
+        riders += len(result.all())
+
+    return boarder_count, riders
+
+
+async def seed_health_and_contacts(session: AsyncSession, school_id: UUID) -> tuple[int, int]:
+    """An emergency contact for every child, and health notes for a few.
+
+    Every child gets a contact because a child with nobody to call is the one
+    thing a school must not be able to leave blank. Health rows are the
+    exception rather than the rule — taarifa za afya pale zinapohitajika,
+    where they are needed — and they sit behind their own permission.
+    """
+    contacts = await session.execute(
+        text(
+            "INSERT INTO emergency_contact (id, school_id, student_id, full_name, "
+            " relationship, phone, priority, may_collect, created_at, updated_at) "
+            "SELECT gen_random_uuid(), :school_id, s.id, g.full_name, "
+            "       gs.relationship::text, g.phone, 1, true, now(), now() "
+            "  FROM student s "
+            "  JOIN guardian_student gs ON gs.student_id = s.id AND gs.is_primary "
+            "  JOIN guardian g ON g.id = gs.guardian_id "
+            " WHERE s.school_id = :school_id "
+            "RETURNING id"
+        ),
+        {"school_id": school_id},
+    )
+    contact_count = len(contacts.all())
+
+    health = await session.execute(
+        text(
+            "INSERT INTO student_health (id, school_id, student_id, blood_group, allergies, "
+            " chronic_conditions, emergency_plan, insurance_scheme, created_at, updated_at) "
+            "SELECT gen_random_uuid(), :school_id, s.id, 'O+', "
+            "       'Peanuts', 'Asthma', "
+            "       'Inhaler in the office. Call the guardian, then the clinic.', "
+            "       'NHIF', now(), now() "
+            "  FROM student s "
+            " WHERE s.school_id = :school_id AND right(s.admission_no, 2) = '07' "
+            "RETURNING id"
+        ),
+        {"school_id": school_id},
+    )
+    return contact_count, len(health.all())
+
+
 async def seed_suspense_payment(session: AsyncSession, school_id: UUID) -> None:
     """Money that arrived with nothing to match it.
 
@@ -835,8 +1073,10 @@ async def report(session: AsyncSession, school_id: UUID) -> None:
 
     print(f"  {SCHOOL_NAME} ({SUBDOMAIN})")
     print(f"  {rows.students} students in {rows.classes} classes, {rows.guardians} guardians")
-    print(f"  {rows.invoices} Term 1 invoices: {rows.billed:,.0f} billed, "
-          f"{rows.collected:,.0f} collected")
+    print(
+        f"  {rows.invoices} Term 1 invoices: {rows.billed:,.0f} billed, "
+        f"{rows.collected:,.0f} collected"
+    )
     print(f"  {rows.waiting} applications waiting for review")
     print(f"  sign in as admin@mwenge.ac.tz / {DEMO_PASSWORD}")
 
@@ -866,13 +1106,18 @@ async def main() -> None:
         )
 
         await seed_fees(session, school_id, ids)
+        await seed_registration_settings(session, school_id)
         await seed_children(session, school_id, ids)
+        boarders, riders = await seed_boarders_and_buses(session, school_id)
+        contacts, health_rows = await seed_health_and_contacts(session, school_id)
         await seed_suspense_payment(session, school_id)
         await seed_applications(session, school_id, ids)
         handset = await attach_test_handset(session, school_id)
         await session.commit()
 
         await report(session, school_id)
+        print(f"  {boarders} boarders, {riders} on a school bus")
+        print(f"  {contacts} emergency contacts, {health_rows} health records")
         if handset:
             print(f"  {handset}")
 

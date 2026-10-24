@@ -51,6 +51,11 @@ class Permission(StrEnum):
     ACADEMIC_MANAGE = "academic:manage"
     STUDENT_READ = "student:read"
     STUDENT_MANAGE = "student:manage"
+    #: Medical details, kept apart from the rest of a child's record.
+    #: Children's health data is sensitive personal data under the Act, and
+    #: a bursar chasing fees has no business reading it.
+    HEALTH_READ = "health:read"
+    HEALTH_MANAGE = "health:manage"
     GUARDIAN_MANAGE = "guardian:manage"
     ADMISSION_REVIEW = "admission:review"
     FEE_STRUCTURE_MANAGE = "fee_structure:manage"
@@ -89,6 +94,8 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             _P.ACADEMIC_MANAGE,
             _P.STUDENT_READ,
             _P.STUDENT_MANAGE,
+            _P.HEALTH_READ,
+            _P.HEALTH_MANAGE,
             _P.GUARDIAN_MANAGE,
             _P.ADMISSION_REVIEW,
             _P.FEE_STRUCTURE_MANAGE,
@@ -110,6 +117,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             _P.ACADEMIC_MANAGE,
             _P.STUDENT_READ,
             _P.STUDENT_MANAGE,
+            _P.HEALTH_READ,
             _P.ADMISSION_REVIEW,
             _P.MARK_READ,
             _P.MARK_ENTER,
@@ -140,6 +148,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
     Role.CLASS_TEACHER: frozenset(
         {
             _P.STUDENT_READ,
+            _P.HEALTH_READ,
             _P.MARK_READ,
             _P.MARK_ENTER,
             _P.ATTENDANCE_TAKE,

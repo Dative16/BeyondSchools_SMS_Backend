@@ -22,7 +22,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base, Timestamped, UUIDPrimaryKey, pg_enum
+from app.models.base import Base, TenantScoped, Timestamped, UUIDPrimaryKey, pg_enum
 
 
 class SchoolStatus(StrEnum):
@@ -124,3 +124,50 @@ class SchoolSequence(UUIDPrimaryKey, Base):
     #: Usually an academic year's label, so each year starts at 1 again.
     scope: Mapped[str] = mapped_column(String(40), nullable=False, server_default="")
     value: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+
+
+class DocumentRequirement(UUIDPrimaryKey, TenantScoped, Timestamped, Base):
+    """One line of a school's own document checklist.
+
+    Which papers a school demands is not a constant. One asks for an
+    immunisation card, one for a baptism certificate, one for three passport
+    photographs and nothing else. So the checklist is rows a school admin
+    edits, and `app/domain/registration.py` computes what is still missing
+    from it.
+
+    `boarders_only` is the reason this cannot be a flat list: "mahitaji ya
+    ziada ya mwanafunzi wa bweni" — the extra papers a boarding pupil needs —
+    must not be demanded of a day pupil, or every day pupil's record shows as
+    incomplete forever and the checklist stops being read.
+    """
+
+    __tablename__ = "document_requirement"
+    __table_args__ = (
+        UniqueConstraint(
+            "school_id", "kind", "level_id", name="uq_document_requirement_school_kind_level"
+        ),
+    )
+
+    #: A member of app.models.student.DocumentKind. Stored as text rather than
+    #: the enum so that this table can be read without importing the student
+    #: models, and so a school can be shown a requirement whose kind was
+    #: retired without the row becoming unreadable.
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    label: Mapped[str] = mapped_column(String(120), nullable=False)
+    #: A requirement that is not required is a prompt: shown on the checklist,
+    #: never blocking. "Last report card, if any" is exactly that.
+    is_required: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    boarders_only: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    #: Null means every level.
+    level_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("level.id", ondelete="CASCADE"), index=True
+    )
+    #: Whether the public application form asks for it, as opposed to the
+    #: registrar collecting it at enrolment. Almost nothing should be here: a
+    #: form that takes more than about four minutes on a phone is a form that
+    #: does not get finished.
+    ask_at_application: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    sort_order: Mapped[int] = mapped_column(SmallInteger, nullable=False, server_default="0")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")

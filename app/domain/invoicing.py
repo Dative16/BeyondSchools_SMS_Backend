@@ -26,6 +26,11 @@ class FeeCategory(StrEnum):
     BOARDING = "boarding"
     TRANSPORT = "transport"
     UNIFORM = "uniform"
+    #: Vifaa vya kujifunzia and vifaa vya shule: exercise books, pens, the
+    #: termly stationery pack. A charge, which the fee structure already
+    #: handles — no new mechanism needed.
+    LEARNING_MATERIALS = "learning_materials"
+    STATIONERY = "stationery"
     MEALS = "meals"
     DEVELOPMENT = "development"
     OTHER = "other"

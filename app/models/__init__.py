@@ -24,6 +24,7 @@ from app.models.academic import (
 from app.models.admission import Application
 from app.models.audit import AuditEvent, AuditOutcome
 from app.models.base import Base
+from app.models.custom_field import SchoolField, SchoolFieldValue
 from app.models.fees import (
     FeeDiscount,
     FeeItem,
@@ -38,8 +39,16 @@ from app.models.payment import (
     ReconciliationException,
     ReconciliationStatus,
 )
-from app.models.school import School, SchoolSequence, SchoolStatus
-from app.models.student import DocumentKind, Enrolment, Sex, Student, StudentDocument
+from app.models.school import DocumentRequirement, School, SchoolSequence, SchoolStatus
+from app.models.student import (
+    DocumentKind,
+    EmergencyContact,
+    Enrolment,
+    Sex,
+    Student,
+    StudentDocument,
+    StudentHealth,
+)
 from app.models.user import AppUser, OtpChallenge, RefreshToken
 
 #: Tables that hold one school's data and are therefore covered by a row-level
@@ -67,6 +76,8 @@ TENANT_TABLES: tuple[str, ...] = (
     "student",
     "enrolment",
     "student_document",
+    "student_health",
+    "emergency_contact",
     "guardian",
     "guardian_student",
     "application",
@@ -77,10 +88,18 @@ TENANT_TABLES: tuple[str, ...] = (
     "fee_discount",
     "payment",
     "reconciliation_exception",
+    "document_requirement",
+    "school_field",
+    "school_field_value",
     "audit_event",
 )
 
 __all__ = [
+    "StudentHealth",
+    "SchoolFieldValue",
+    "SchoolField",
+    "EmergencyContact",
+    "DocumentRequirement",
     "AcademicYear",
     "AcademicYearExitLevel",
     "AppUser",
