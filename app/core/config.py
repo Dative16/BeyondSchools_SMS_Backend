@@ -40,6 +40,29 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_TTL_SECONDS: int = 900
     REFRESH_TOKEN_TTL_SECONDS: int = 1_209_600
 
+    #: This service's own address, as the outside world reaches it. Used to
+    #: build the URLs the local storage adapter serves, and nothing else.
+    PUBLIC_BASE_URL: str = "http://localhost:8000"
+
+    # Documents. "local" writes to disk and serves through this API so the
+    # admissions flow is runnable before R2 exists; "r2" is Cloudflare R2
+    # through its S3-compatible API, which is what production uses. The bucket
+    # is private either way: these are children's birth certificates, and a
+    # public URL is a URL that ends up in a WhatsApp group.
+    STORAGE_PROVIDER: Literal["local", "r2"] = "local"
+    STORAGE_LOCAL_PATH: str = "/srv/.storage"
+    R2_ACCOUNT_ID: str = ""
+    R2_ACCESS_KEY_ID: str = ""
+    R2_SECRET_ACCESS_KEY: str = ""
+    R2_BUCKET: str = ""
+    #: Only for a non-default endpoint; otherwise derived from the account id.
+    R2_ENDPOINT: str = ""
+    #: How long an upload or a download link lives. Long enough for a slow
+    #: upload on a weak connection, short enough that a link copied out of a
+    #: browser history is worthless.
+    STORAGE_UPLOAD_TTL_SECONDS: int = 900
+    STORAGE_DOWNLOAD_TTL_SECONDS: int = 300
+
     AI_PLATFORM_BASE_URL: str = ""
     AI_PLATFORM_API_KEY: str = ""
     AI_PLATFORM_WEBHOOK_SECRET: str = ""

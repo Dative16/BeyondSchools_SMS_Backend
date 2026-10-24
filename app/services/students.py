@@ -24,6 +24,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
+from app.core.config import settings
 from app.domain.enrolment import EnrolmentOutcome, StudentStatus, admission_number
 from app.domain.registration import (
     Checklist,
@@ -35,6 +36,15 @@ from app.domain.registration import (
     coerce_field_value,
 )
 from app.domain.roles import Permission, Principal, Role, can, may_see_student
+from app.integrations.storage.base import (
+    ObjectStore,
+    Scope,
+    UploadRejected,
+    UploadTicket,
+    build_object_key,
+    check_declared_upload,
+    check_stored_object,
+)
 from app.models.audit import AuditOutcome
 from app.models.student import Enrolment, Student, StudentDocument, StudentHealth
 from app.repositories.audit import AuditRepository
@@ -95,6 +105,7 @@ class StudentService:
         schools: SchoolRepository,
         settings_repo: SqlRegistrationSettingsRepository,
         audit: AuditRepository,
+        storage: ObjectStore,
     ) -> None:
         self._uow = uow
         self._students = students
@@ -102,6 +113,7 @@ class StudentService:
         self._schools = schools
         self._settings = settings_repo
         self._audit = audit
+        self._storage = storage
 
     # ----------------------------------------------------------------------
     # Guards
@@ -752,6 +764,70 @@ class StudentService:
         await self._require_can_see(principal, student_id)
         return await self._students.documents(student_id)
 
+    async def request_upload(
+        self,
+        principal: Principal,
+        *,
+        student_id: UUID,
+        kind: str,
+        content_type: str,
+        size_bytes: int | None,
+    ) -> UploadTicket:
+        """Hand back a URL the client uploads the file to itself.
+
+        The bytes never come through this API. A 4 MB photograph through an
+        application container ties up a worker for the length of a 3G upload,
+        and a school's intake day is several hundred of them.
+
+        What the client cannot choose is the key: a client-chosen key is a
+        client that can overwrite another school's object.
+        """
+        self._require(principal, Permission.STUDENT_MANAGE)
+        student = await self._students.get(student_id)
+        if student is None:
+            raise NotFound("no such student")
+
+        try:
+            check_declared_upload(content_type=content_type, size_bytes=size_bytes)
+            object_key = build_object_key(
+                school_id=student.school_id,
+                scope=Scope.STUDENT,
+                owner_id=student_id,
+                kind=kind,
+                content_type=content_type,
+            )
+        except UploadRejected as exc:
+            raise Invalid(str(exc)) from exc
+
+        return self._storage.presign_upload(
+            object_key=object_key,
+            content_type=content_type,
+            expires_in=settings.STORAGE_UPLOAD_TTL_SECONDS,
+        )
+
+    async def download_url(
+        self, principal: Principal, *, student_id: UUID, document_id: UUID
+    ) -> str:
+        """A short-lived URL for somebody who is allowed to read the file.
+
+        Generated per request rather than stored, because a stored URL is a
+        permanent one: these are children's birth certificates, and the
+        bucket is private precisely so that reading one is an act with a
+        permission attached.
+        """
+        self._require(principal, Permission.STUDENT_READ)
+        await self._require_can_see(principal, student_id)
+
+        documents = await self._students.documents(student_id)
+        document = next((row for row in documents if row.id == document_id), None)
+        if document is None:
+            raise NotFound("no such document")
+
+        return self._storage.presign_download(
+            object_key=document.file_url,
+            expires_in=settings.STORAGE_DOWNLOAD_TTL_SECONDS,
+        )
+
     async def add_document(
         self,
         principal: Principal,
@@ -760,7 +836,27 @@ class StudentService:
         document: dict[str, Any],
         context: RequestContext,
     ) -> StudentDocument:
+        """Record a file that has already been uploaded.
+
+        Storage is asked what actually arrived rather than trusting what the
+        client said it was about to send. A presigned PUT cannot enforce a
+        length, so this is the check that makes the size limit real — and it
+        is also what stops a record existing for an upload that never
+        completed.
+        """
         self._require(principal, Permission.STUDENT_MANAGE)
+
+        object_key = document.pop("object_key")
+        stored = await self._storage.head(object_key=object_key)
+        if stored is None:
+            raise Invalid("that upload did not arrive; try again")
+        try:
+            check_stored_object(stored)
+        except UploadRejected as exc:
+            # Leaving the object behind would mean paying to store something
+            # we have refused to record.
+            await self._storage.delete(object_key=object_key)
+            raise Invalid(str(exc)) from exc
 
         async with self._uow:
             student = await self._students.get(student_id)
@@ -771,6 +867,9 @@ class StudentService:
                 school_id=student.school_id,
                 student_id=student_id,
                 uploaded_by_id=principal.user_id,
+                file_url=object_key,
+                content_type=stored.content_type,
+                size_bytes=stored.size_bytes,
                 **document,
             )
             await self._audit.record(

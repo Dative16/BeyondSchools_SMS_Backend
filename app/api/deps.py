@@ -33,6 +33,7 @@ from app.db.session import get_session
 from app.domain.roles import Permission, Principal, can
 from app.integrations.sms.base import SmsSender
 from app.integrations.sms.provider import get_sms_sender
+from app.integrations.storage import ObjectStore, get_object_store
 from app.repositories.academic import SqlAcademicRepository
 from app.repositories.audit import SqlAuditRepository
 from app.repositories.base import SqlAlchemyUnitOfWork
@@ -291,7 +292,14 @@ async def academic_service(session: TenantSessionDep) -> AcademicService:
 AcademicServiceDep = Annotated[AcademicService, Depends(academic_service)]
 
 
-async def student_service(session: TenantSessionDep) -> StudentService:
+def object_store() -> ObjectStore:
+    return get_object_store()
+
+
+async def student_service(
+    session: TenantSessionDep,
+    storage: Annotated[ObjectStore, Depends(object_store)],
+) -> StudentService:
     """Students, enrolments, guardians and the detail around them."""
     return StudentService(
         uow=SqlAlchemyUnitOfWork(session),
@@ -300,6 +308,7 @@ async def student_service(session: TenantSessionDep) -> StudentService:
         schools=SqlSchoolRepository(session),
         settings_repo=SqlRegistrationSettingsRepository(session),
         audit=SqlAuditRepository(session),
+        storage=storage,
     )
 
 

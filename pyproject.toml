@@ -25,6 +25,11 @@ dependencies = [
   "cryptography>=43",
   "python-dateutil>=2.9",
   "structlog>=24.4",
+  # Cloudflare R2 speaks S3, and presigning is an HMAC over a canonical
+  # request — arithmetic, not a network call. botocore signs it; httpx
+  # does the two calls that actually touch the network, so the whole
+  # adapter stays async. boto3 itself is not needed.
+  "botocore>=1.35",
 ]
 
 [project.optional-dependencies]
@@ -59,7 +64,7 @@ plugins = ["pydantic.mypy"]
 # Celery ships no type information. Ignoring it here is narrower than
 # relaxing strict mode for the workers package.
 [[tool.mypy.overrides]]
-module = ["celery.*"]
+module = ["celery.*", "botocore.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

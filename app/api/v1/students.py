@@ -26,6 +26,7 @@ from app.schemas.student import (
     ChecklistResponse,
     DocumentCreateRequest,
     DocumentResponse,
+    DownloadUrlResponse,
     EmergencyContactModel,
     EmergencyContactsReplaceRequest,
     EnrolmentHistoryRow,
@@ -40,6 +41,8 @@ from app.schemas.student import (
     StudentResponse,
     StudentUpdateRequest,
     TransferOutRequest,
+    UploadTicketRequest,
+    UploadTicketResponse,
 )
 from app.services.auth import RequestContext
 from app.services.students import Invalid, NotAllowed, NotFound
@@ -424,10 +427,77 @@ async def student_documents(
 
 
 @router.post(
+    "/{student_id}/documents/upload-url",
+    response_model=UploadTicketResponse,
+    summary="Get a URL to upload a document to",
+)
+async def document_upload_url(
+    student_id: UUID,
+    body: UploadTicketRequest,
+    principal: PrincipalDep,
+    service: StudentServiceDep,
+) -> UploadTicketResponse:
+    """Step one of two. The client PUTs the file straight to storage.
+
+    The bytes never come through this API: a four-megabyte photograph through
+    an application container ties up a worker for the length of a 3G upload,
+    and a school's intake day is several hundred of them.
+    """
+    try:
+        ticket = await service.request_upload(
+            principal,
+            student_id=student_id,
+            kind=body.kind,
+            content_type=body.content_type,
+            size_bytes=body.size_bytes,
+        )
+    except (NotAllowed, NotFound, Invalid) as exc:
+        raise _handle(exc) from exc
+
+    return UploadTicketResponse(
+        url=ticket.url,
+        object_key=ticket.object_key,
+        expires_at=ticket.expires_at,
+        headers=ticket.headers,
+        max_bytes=ticket.max_bytes,
+    )
+
+
+@router.get(
+    "/{student_id}/documents/{document_id}/url",
+    response_model=DownloadUrlResponse,
+    summary="A short-lived link to one document",
+)
+async def document_download_url(
+    student_id: UUID,
+    document_id: UUID,
+    principal: PrincipalDep,
+    service: StudentServiceDep,
+) -> DownloadUrlResponse:
+    """Generated per request, never stored.
+
+    The bucket is private so that opening a child's birth certificate is an
+    act with a permission attached rather than a URL anybody holding it can
+    follow forever.
+    """
+    from app.core.config import settings
+
+    try:
+        url = await service.download_url(
+            principal, student_id=student_id, document_id=document_id
+        )
+    except (NotAllowed, NotFound, Invalid) as exc:
+        raise _handle(exc) from exc
+    return DownloadUrlResponse(
+        url=url, expires_in=settings.STORAGE_DOWNLOAD_TTL_SECONDS
+    )
+
+
+@router.post(
     "/{student_id}/documents",
     response_model=DocumentResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Record a document",
+    summary="Confirm an uploaded document",
 )
 async def add_student_document(
     student_id: UUID,
@@ -436,11 +506,11 @@ async def add_student_document(
     service: StudentServiceDep,
     context: ContextDep,
 ) -> DocumentResponse:
-    """Records a reference, not the bytes.
+    """Step two of two.
 
-    Object storage is not wired up yet, so the file goes to it directly and
-    this endpoint records where. When storage lands this gains a presigned
-    upload step and the shape of the record does not change.
+    Storage is asked what actually arrived rather than trusting what the
+    client said it would send, which is what makes the size limit real and
+    what stops a record existing for an upload that never finished.
     """
     try:
         document = await service.add_document(

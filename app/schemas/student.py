@@ -248,21 +248,58 @@ class DocumentResponse(BaseModel):
     created_at: datetime
 
 
-class DocumentCreateRequest(BaseModel):
-    """Attach a document that has already been stored somewhere.
+class UploadTicketRequest(BaseModel):
+    """What the client is about to upload.
 
-    The bytes do not pass through this endpoint: object storage is not wired up
-    yet, so the file is uploaded to it directly and the reference recorded
-    here. When storage lands this gains a presigned-upload step; the shape of
-    the record does not change.
+    Declared up front so an impossible upload is refused before a parent on a
+    weak connection has sent four megabytes.
     """
 
     kind: str = Field(min_length=2, max_length=40)
-    file_url: str = Field(min_length=4)
+    content_type: str = Field(min_length=3, max_length=80)
+    size_bytes: int | None = Field(default=None, ge=1)
+
+
+class UploadTicketResponse(BaseModel):
+    """Where to PUT the file, and what to send with it.
+
+    `object_key` is chosen by the server and echoed back to be confirmed. A
+    client that could choose its own key is a client that could overwrite
+    another school's object.
+    """
+
+    url: str
+    object_key: str
+    expires_at: datetime
+    headers: dict[str, str]
+    max_bytes: int
+
+
+class DocumentCreateRequest(BaseModel):
+    """Record a file that has already been uploaded.
+
+    The bytes never pass through this API: the client PUTs them to storage
+    with the presigned URL, then confirms here. The service asks storage what
+    actually arrived rather than trusting the size and type declared earlier —
+    a presigned PUT cannot enforce a length.
+    """
+
+    kind: str = Field(min_length=2, max_length=40)
+    object_key: str = Field(min_length=8, max_length=512)
     file_name: str | None = Field(default=None, max_length=255)
-    content_type: str | None = Field(default=None, max_length=80)
-    size_bytes: int | None = Field(default=None, ge=0)
     note: str | None = None
+
+
+class DownloadUrlResponse(BaseModel):
+    """A short-lived link to one document.
+
+    Generated per request rather than stored. The bucket is private precisely
+    so that reading a child's birth certificate is an act with a permission
+    attached.
+    """
+
+    url: str
+    expires_in: int
 
 
 class ChecklistItemResponse(BaseModel):

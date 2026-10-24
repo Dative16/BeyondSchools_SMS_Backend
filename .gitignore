@@ -30,3 +30,6 @@ openapi.json
 beam settings.txt
 *settings.txt
 *.cs.txt
+
+# Documents written by the local storage adapter.
+.storage/

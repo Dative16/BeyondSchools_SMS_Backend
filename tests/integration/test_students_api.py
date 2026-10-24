@@ -670,18 +670,166 @@ async def test_a_boarders_checklist_asks_for_more_than_a_day_pupils(client, setu
     assert "Boarder health form" in boarder_list.json()["missing"]
 
 
-async def test_recording_a_document_clears_its_line(client, setup, admin) -> None:
+def tiny_png() -> bytes:
+    """A real 1x1 PNG, so the declared content type is not a lie.
+
+    Built byte by byte rather than pasted as an escaped literal: the confirm
+    step asks storage what actually arrived, so a test that uploaded something
+    which is not a PNG would be testing the wrong thing.
+    """
+    import struct
+    import zlib
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + tag
+            + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        )
+
+    signature = bytes([137, 80, 78, 71, 13, 10, 26, 10])
+    header = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    pixel = zlib.compress(bytes([0, 255, 255, 255]))
+    return (
+        signature + chunk(b"IHDR", header) + chunk(b"IDAT", pixel) + chunk(b"IEND", b"")
+    )
+
+
+async def upload_document(client, admin, student_id, *, kind="birth_certificate"):
+    """The two steps a client actually takes: PUT to storage, then confirm."""
+    png = tiny_png()
+    ticket = await client.post(
+        f"/api/v1/students/{student_id}/documents/upload-url",
+        json={"kind": kind, "content_type": "image/png", "size_bytes": len(png)},
+        headers=admin,
+    )
+    assert ticket.status_code == 200, ticket.text
+    body = ticket.json()
+
+    put = await client.put(body["url"], content=png, headers=body["headers"])
+    assert put.status_code == 200, put.text
+
+    confirmed = await client.post(
+        f"/api/v1/students/{student_id}/documents",
+        json={"kind": kind, "object_key": body["object_key"], "file_name": "cheti.png"},
+        headers=admin,
+    )
+    return confirmed, png
+
+
+async def test_a_document_goes_straight_to_storage_and_is_verified_on_confirm(
+    client, setup, admin
+) -> None:
+    """The bytes never pass through the API: a four-megabyte photograph through
+    an application container ties up a worker for the length of a 3G upload,
+    and an intake day is several hundred of them.
+
+    What the confirm step records is what storage says arrived, not what the
+    client said it would send — a presigned PUT cannot enforce a length.
+    """
     student_id = await admit(client, admin)
 
-    await client.post(
-        f"/api/v1/students/{student_id}/documents",
+    confirmed, png = await upload_document(client, admin, student_id)
+
+    assert confirmed.status_code == 201, confirmed.text
+    document = confirmed.json()
+    assert document["size_bytes"] == len(png)
+    assert document["content_type"] == "image/png"
+    # The stored reference is an object key, not a URL anybody can follow.
+    assert document["file_url"].startswith(f"school/{setup['school_id']}/student/")
+
+
+async def test_the_object_key_is_chosen_by_the_server(client, setup, admin) -> None:
+    """A client that could choose its own key is a client that could overwrite
+    another school's object."""
+    student_id = await admit(client, admin)
+
+    ticket = await client.post(
+        f"/api/v1/students/{student_id}/documents/upload-url",
+        json={"kind": "passport_photo", "content_type": "image/jpeg"},
+        headers=admin,
+    )
+
+    key = ticket.json()["object_key"]
+    assert key.startswith(f"school/{setup['school_id']}/student/{student_id}/passport_photo/")
+
+
+async def test_reading_a_document_needs_a_fresh_short_lived_link(
+    client, setup, admin
+) -> None:
+    """The bucket is private so that opening a child's birth certificate is an
+    act with a permission attached, rather than a URL that works forever."""
+    student_id = await admit(client, admin)
+    confirmed, png = await upload_document(client, admin, student_id)
+    document_id = confirmed.json()["id"]
+
+    link = await client.get(
+        f"/api/v1/students/{student_id}/documents/{document_id}/url", headers=admin
+    )
+    assert link.status_code == 200
+    assert link.json()["expires_in"] <= 900
+
+    fetched = await client.get(link.json()["url"])
+    assert fetched.status_code == 200
+    assert fetched.content == png
+
+    tampered = await client.get(
+        link.json()["url"].split("?")[0] + "?expires=1&signature=deadbeef"
+    )
+    assert tampered.status_code == 403
+
+
+async def test_an_upload_the_school_cannot_store_is_refused_up_front(
+    client, setup, admin
+) -> None:
+    student_id = await admit(client, admin)
+
+    executable = await client.post(
+        f"/api/v1/students/{student_id}/documents/upload-url",
+        json={"kind": "birth_certificate", "content_type": "application/x-msdownload"},
+        headers=admin,
+    )
+    oversized = await client.post(
+        f"/api/v1/students/{student_id}/documents/upload-url",
         json={
             "kind": "birth_certificate",
-            "file_url": "https://example.invalid/bc.jpg",
-            "file_name": "bc.jpg",
+            "content_type": "image/jpeg",
+            "size_bytes": 40 * 1024 * 1024,
         },
         headers=admin,
     )
+
+    assert executable.status_code == 422
+    assert "not a kind of file" in executable.json()["detail"]
+    assert oversized.status_code == 422
+    assert "larger than 8 MB" in oversized.json()["detail"]
+
+
+async def test_confirming_an_upload_that_never_arrived_is_refused(
+    client, setup, admin
+) -> None:
+    """Otherwise a record exists for a document nobody can open, and a
+    checklist clears itself without a file behind it."""
+    student_id = await admit(client, admin)
+
+    response = await client.post(
+        f"/api/v1/students/{student_id}/documents",
+        json={
+            "kind": "birth_certificate",
+            "object_key": f"school/{setup['school_id']}/student/{student_id}/bc/nothing.jpg",
+        },
+        headers=admin,
+    )
+
+    assert response.status_code == 422
+    assert "did not arrive" in response.json()["detail"]
+
+
+async def test_recording_a_document_clears_its_line(client, setup, admin) -> None:
+    student_id = await admit(client, admin)
+
+    await upload_document(client, admin, student_id)
     checklist = await client.get(f"/api/v1/students/{student_id}/checklist", headers=admin)
 
     assert "Birth certificate" not in checklist.json()["missing"]

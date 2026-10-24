@@ -124,6 +124,35 @@ Three behaviours worth knowing before changing this code:
   subdomain is that the session was pinned first. There is a test for exactly
   that.
 
+## Documents
+
+The bytes never pass through this API. A client asks for an upload URL, PUTs
+the file straight to storage, then confirms — and the confirm step asks storage
+what actually arrived rather than trusting what the client said it would send,
+because a presigned PUT cannot enforce a length.
+
+```
+POST /students/{id}/documents/upload-url   -> { url, object_key, headers }
+PUT  <url>                                  (the client, direct to storage)
+POST /students/{id}/documents               -> the record, size and type verified
+GET  /students/{id}/documents/{id}/url     -> a 5-minute link to read it
+```
+
+`STORAGE_PROVIDER=local` writes to disk and serves through this service's own
+`/files` routes, so the admissions flow is runnable before Cloudflare R2
+exists. Production sets `STORAGE_PROVIDER=r2` and those routes are not mounted
+at all.
+
+Three properties worth keeping:
+
+- **The bucket is private.** These are children's birth certificates. Reads go
+  through a short-lived presigned URL generated when somebody with permission
+  opens the document — a public URL is a URL that ends up in a WhatsApp group.
+- **The key carries the tenant**, `school/<school_id>/...` first, so a
+  lifecycle rule or a mistaken prefix delete cannot cross schools.
+- **The server chooses the key.** A client that could choose its own key is a
+  client that could overwrite another school's object.
+
 ## Layout
 
 ```
