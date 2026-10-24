@@ -1,0 +1,761 @@
+"""Students, enrolments and guardians through the real app.
+
+What these cover that the unit tests cannot: who may see a child, that a
+guardian's children are a question about rows rather than claims, and that
+health sits behind its own capability rather than riding along with the rest
+of a profile.
+"""
+
+from datetime import date
+from uuid import uuid4
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
+
+from app.core.security import hash_password
+from app.main import app
+from tests.conftest import make_academic_year, make_class_group, make_level, make_school
+
+PASSWORD = "Shule2027!"  # noqa: S105 - test fixture data
+
+
+@pytest.fixture
+async def client() -> AsyncClient:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as c:
+        yield c
+
+
+async def _add_user(session, *, school_id, name, role, email=None, phone=None, guardian_id=None):
+    user_id = uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO app_user (id, school_id, full_name, email, phone, role, "
+            " password_hash, must_change_password, is_active, failed_logins, guardian_id, "
+            " created_at, updated_at) "
+            "VALUES (:id, :school_id, :name, :email, :phone, :role, :hash, false, true, 0, "
+            " :guardian_id, now(), now())"
+        ),
+        {
+            "id": user_id,
+            "school_id": school_id,
+            "name": name,
+            "email": email,
+            "phone": phone,
+            "role": role,
+            "hash": hash_password(PASSWORD),
+            "guardian_id": guardian_id,
+        },
+    )
+    return user_id
+
+
+@pytest.fixture
+async def setup(owner_session):
+    suffix = uuid4().hex[:6]
+    school_id = await make_school(owner_session, name="Mwenge", subdomain=f"stud{suffix}")
+    subdomain = await owner_session.scalar(
+        text("SELECT subdomain FROM school WHERE id = :id"), {"id": school_id}
+    )
+
+    year_id = await make_academic_year(owner_session, school_id=school_id)
+    level_id = await make_level(owner_session, school_id=school_id, code="STD4", order_index=4)
+    blue = await make_class_group(
+        owner_session,
+        school_id=school_id,
+        academic_year_id=year_id,
+        level_id=level_id,
+        name="Standard 4 Blue",
+    )
+    green = await make_class_group(
+        owner_session,
+        school_id=school_id,
+        academic_year_id=year_id,
+        level_id=level_id,
+        name="Standard 4 Green",
+    )
+
+    emails = {
+        "admin": f"admin-{suffix}@mwenge.ac.tz",
+        "bursar": f"bursar-{suffix}@mwenge.ac.tz",
+        "teacher": f"teacher-{suffix}@mwenge.ac.tz",
+    }
+    await _add_user(
+        owner_session,
+        school_id=school_id,
+        name="Datius",
+        role="school_admin",
+        email=emails["admin"],
+    )
+    await _add_user(
+        owner_session, school_id=school_id, name="Salome", role="bursar", email=emails["bursar"]
+    )
+    teacher_id = await _add_user(
+        owner_session,
+        school_id=school_id,
+        name="Grace",
+        role="class_teacher",
+        email=emails["teacher"],
+    )
+    # The teacher gets Blue, and only Blue.
+    await owner_session.execute(
+        text("UPDATE class_group SET class_teacher_id = :t WHERE id = :id"),
+        {"t": teacher_id, "id": blue},
+    )
+
+    # One document requirement, so the checklist has something to say.
+    await owner_session.execute(
+        text(
+            "INSERT INTO document_requirement (id, school_id, kind, label, is_required, "
+            " boarders_only, ask_at_application, sort_order, is_active, created_at, updated_at) "
+            "VALUES (gen_random_uuid(), :school_id, 'birth_certificate', 'Birth certificate', "
+            " true, false, true, 0, true, now(), now()), "
+            " (gen_random_uuid(), :school_id, 'medical', 'Boarder health form', true, true, "
+            " false, 1, true, now(), now())"
+        ),
+        {"school_id": school_id},
+    )
+    await owner_session.execute(
+        text(
+            "INSERT INTO school_field (id, school_id, key, label, kind, scope, options, "
+            " required_at_registration, is_sensitive, is_active, sort_order, "
+            " created_at, updated_at) "
+            "VALUES (gen_random_uuid(), :school_id, 'uniform_size', 'Uniform size', 'choice', "
+            " 'student', ARRAY['S','M','L'], false, false, true, 0, now(), now())"
+        ),
+        {"school_id": school_id},
+    )
+    await owner_session.commit()
+
+    yield {
+        "school_id": school_id,
+        "subdomain": subdomain,
+        "year_id": year_id,
+        "level_id": level_id,
+        "blue": blue,
+        "green": green,
+        "teacher_id": teacher_id,
+        **{f"{k}_email": v for k, v in emails.items()},
+    }
+
+    await owner_session.rollback()
+    await owner_session.execute(text("DELETE FROM school WHERE id = :id"), {"id": school_id})
+    await owner_session.commit()
+
+
+async def token(client, *, email, subdomain) -> dict[str, str]:
+    response = await client.post(
+        "/api/v1/auth/login",
+        json={"identifier": email, "password": PASSWORD},
+        headers={"X-School-Subdomain": subdomain},
+    )
+    assert response.status_code == 200, response.text
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+@pytest.fixture
+async def admin(client, setup):
+    return await token(client, email=setup["admin_email"], subdomain=setup["subdomain"])
+
+
+async def admit(client, admin, *, first="Neema", surname="Mwanjala") -> str:
+    response = await client.post(
+        "/api/v1/students",
+        json={
+            "first_name": first,
+            "surname": surname,
+            "date_of_birth": "2018-06-08",
+            "sex": "f",
+        },
+        headers=admin,
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["id"]
+
+
+async def enrol(client, admin, setup, student_id, *, class_group=None, residency="day") -> str:
+    response = await client.post(
+        "/api/v1/enrolments",
+        json={
+            "student_id": student_id,
+            "academic_year_id": str(setup["year_id"]),
+            "class_group_id": str(class_group or setup["blue"]),
+            "residency": residency,
+        },
+        headers=admin,
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["id"]
+
+
+# --------------------------------------------------------------------------
+# Admission numbers
+# --------------------------------------------------------------------------
+async def test_admission_numbers_come_from_a_sequence_not_the_form(client, setup, admin) -> None:
+    """Issued server-side from a locked counter, so two registrars admitting
+    in the same second cannot mint the same number."""
+    first = await admit(client, admin, first="Neema")
+    second = await admit(client, admin, first="Baraka")
+
+    numbers = []
+    for student_id in (first, second):
+        response = await client.get(f"/api/v1/students/{student_id}", headers=admin)
+        numbers.append(response.json()["student"]["admission_no"])
+
+    assert len(set(numbers)) == 2
+    assert all(number.endswith(("0001", "0002")) for number in numbers)
+
+
+async def test_a_new_child_is_prospective_until_enrolled(client, setup, admin) -> None:
+    student_id = await admit(client, admin)
+
+    before = await client.get(f"/api/v1/students/{student_id}", headers=admin)
+    assert before.json()["student"]["status"] == "prospective"
+
+    await enrol(client, admin, setup, student_id)
+
+    after = await client.get(f"/api/v1/students/{student_id}", headers=admin)
+    assert after.json()["student"]["status"] == "active"
+    assert after.json()["class_name"] == "Standard 4 Blue"
+
+
+# --------------------------------------------------------------------------
+# One active enrolment
+# --------------------------------------------------------------------------
+async def test_a_second_open_enrolment_is_refused_with_an_explanation(client, setup, admin) -> None:
+    """Rather than quietly rewriting last year's row, which is the whole
+    reason enrolments are separate records."""
+    student_id = await admit(client, admin)
+    await enrol(client, admin, setup, student_id)
+
+    again = await client.post(
+        "/api/v1/enrolments",
+        json={
+            "student_id": student_id,
+            "academic_year_id": str(setup["year_id"]),
+            "class_group_id": str(setup["green"]),
+        },
+        headers=admin,
+    )
+
+    assert again.status_code == 422
+    assert "already has an open enrolment" in again.json()["detail"]
+
+
+async def test_boarding_and_bus_are_per_year_facts(client, setup, admin) -> None:
+    student_id = await admit(client, admin)
+    enrolment_id = await enrol(client, admin, setup, student_id)
+
+    response = await client.patch(
+        f"/api/v1/enrolments/{enrolment_id}",
+        json={
+            "residency": "boarder",
+            "dormitory": "Uhuru",
+            "uses_transport": True,
+            "transport_route": "Majengo",
+            "transport_stop": "Majengo A",
+        },
+        headers=admin,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["residency"] == "boarder"
+    assert body["dormitory"] == "Uhuru"
+    assert body["transport_route"] == "Majengo"
+
+
+async def test_transfer_out_closes_the_enrolment_and_keeps_the_record(client, setup, admin) -> None:
+    """A school asked for a transfer letter two years later has to answer, and
+    arrears do not vanish because a child left."""
+    student_id = await admit(client, admin)
+    await enrol(client, admin, setup, student_id)
+
+    response = await client.post(
+        f"/api/v1/students/{student_id}/transfer-out",
+        json={"reason": "Family moved to Dodoma"},
+        headers=admin,
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "transferred_out"
+
+    history = await client.get(f"/api/v1/students/{student_id}/enrolments", headers=admin)
+    assert history.json()[0]["outcome"] == "transferred_out"
+    assert history.json()[0]["exited_on"] is not None
+
+
+# --------------------------------------------------------------------------
+# The roll
+# --------------------------------------------------------------------------
+async def test_the_roll_searches_by_name_and_admission_number(client, setup, admin) -> None:
+    await admit(client, admin, first="Neema", surname="Mwanjala")
+    await admit(client, admin, first="Baraka", surname="Shayo")
+
+    by_name = await client.get("/api/v1/students", params={"q": "Shayo"}, headers=admin)
+    assert by_name.json()["total"] == 1
+
+    number = by_name.json()["items"][0]["admission_no"]
+    by_number = await client.get("/api/v1/students", params={"q": number}, headers=admin)
+    assert by_number.json()["total"] == 1
+
+
+async def test_the_roll_filters_by_boarding_and_transport(client, setup, admin) -> None:
+    day = await admit(client, admin, first="Joyce")
+    await enrol(client, admin, setup, day)
+    boarder = await admit(client, admin, first="Amani")
+    await enrol(client, admin, setup, boarder, residency="boarder")
+
+    boarders = await client.get("/api/v1/students", params={"residency": "boarder"}, headers=admin)
+
+    assert boarders.json()["total"] == 1
+    assert boarders.json()["items"][0]["first_name"] == "Amani"
+
+
+async def test_the_roll_is_paginated(client, setup, admin) -> None:
+    for index in range(4):
+        await admit(client, admin, first=f"Child{index}")
+
+    page = await client.get("/api/v1/students", params={"size": 2, "page": 2}, headers=admin)
+
+    body = page.json()
+    assert body["total"] == 4
+    assert len(body["items"]) == 2
+    assert body["page"] == 2
+
+
+async def test_a_teacher_sees_only_their_own_class(client, setup, admin) -> None:
+    """Narrowed by the service, not by the client: a list endpoint that
+    returns the school and trusts the caller to filter is one that leaks."""
+    mine = await admit(client, admin, first="Mine")
+    await enrol(client, admin, setup, mine, class_group=setup["blue"])
+    theirs = await admit(client, admin, first="Theirs")
+    await enrol(client, admin, setup, theirs, class_group=setup["green"])
+
+    teacher = await token(client, email=setup["teacher_email"], subdomain=setup["subdomain"])
+    response = await client.get("/api/v1/students", headers=teacher)
+
+    names = [row["first_name"] for row in response.json()["items"]]
+    assert names == ["Mine"]
+
+    asking_for_another = await client.get(
+        "/api/v1/students", params={"class_group_id": str(setup["green"])}, headers=teacher
+    )
+    assert asking_for_another.status_code == 403
+
+
+async def test_a_teacher_cannot_open_a_child_from_another_class(client, setup, admin) -> None:
+    theirs = await admit(client, admin, first="Theirs")
+    await enrol(client, admin, setup, theirs, class_group=setup["green"])
+    teacher = await token(client, email=setup["teacher_email"], subdomain=setup["subdomain"])
+
+    response = await client.get(f"/api/v1/students/{theirs}", headers=teacher)
+
+    assert response.status_code == 403
+    assert "not in one of your classes" in response.json()["detail"]
+
+
+# --------------------------------------------------------------------------
+# Guardians
+# --------------------------------------------------------------------------
+async def test_one_guardian_three_children(client, setup, admin) -> None:
+    """A parent with three children at the school is one guardian and three
+    links. Without that, the family gets three fee reminders and no combined
+    balance."""
+    phone = f"0754{uuid4().int % 1000000:06d}"
+    guardian_ids = set()
+    for name in ("Neema", "Baraka", "Joyce"):
+        student_id = await admit(client, admin, first=name, surname="Shayo")
+        response = await client.post(
+            f"/api/v1/students/{student_id}/guardians",
+            json={
+                "guardian": {"full_name": "Juma Shayo", "phone": phone},
+                "link": {"relationship": "father", "is_primary": True},
+            },
+            headers=admin,
+        )
+        assert response.status_code == 201, response.text
+        guardian_ids.add(response.json()["guardian_id"])
+
+    assert len(guardian_ids) == 1, "matched on phone, so it is the same person"
+
+
+async def test_a_phone_written_three_ways_is_one_guardian(client, setup, admin) -> None:
+    first = await admit(client, admin, first="Neema")
+    second = await admit(client, admin, first="Baraka")
+
+    a = await client.post(
+        f"/api/v1/students/{first}/guardians",
+        json={
+            "guardian": {"full_name": "Asha Mwanjala", "phone": "0754118902"},
+            "link": {"relationship": "mother"},
+        },
+        headers=admin,
+    )
+    b = await client.post(
+        f"/api/v1/students/{second}/guardians",
+        json={
+            "guardian": {"full_name": "Asha Mwanjala", "phone": "+255754118902"},
+            "link": {"relationship": "mother"},
+        },
+        headers=admin,
+    )
+
+    assert a.json()["guardian_id"] == b.json()["guardian_id"]
+
+
+async def test_one_primary_guardian_per_child(client, setup, admin) -> None:
+    student_id = await admit(client, admin)
+    for name, phone in (("Asha", "0754100001"), ("Said", "0754100002")):
+        response = await client.post(
+            f"/api/v1/students/{student_id}/guardians",
+            json={
+                "guardian": {"full_name": f"{name} Mwanjala", "phone": phone},
+                "link": {"relationship": "mother", "is_primary": True},
+            },
+            headers=admin,
+        )
+        assert response.status_code == 201, response.text
+
+    guardians = await client.get(f"/api/v1/students/{student_id}/guardians", headers=admin)
+
+    primaries = [row for row in guardians.json() if row["is_primary"]]
+    assert len(primaries) == 1
+    assert primaries[0]["full_name"] == "Said Mwanjala", "the newest one takes over"
+
+
+async def test_the_last_guardian_cannot_be_unlinked(client, setup, admin) -> None:
+    """A child with nobody to contact is the one state this must not produce."""
+    student_id = await admit(client, admin)
+    linked = await client.post(
+        f"/api/v1/students/{student_id}/guardians",
+        json={
+            "guardian": {"full_name": "Asha Mwanjala", "phone": "0754100003"},
+            "link": {"relationship": "mother", "is_primary": True},
+        },
+        headers=admin,
+    )
+
+    response = await client.delete(
+        f"/api/v1/students/{student_id}/guardians/{linked.json()['guardian_id']}",
+        headers=admin,
+    )
+
+    assert response.status_code == 422
+    assert "only guardian" in response.json()["detail"]
+
+
+async def test_a_guardian_sees_their_own_children_and_nobody_elses(
+    client, setup, admin, owner_session
+) -> None:
+    """Which children are a guardian's is a question about rows, so it cannot
+    be answered from a token and is answered with a query every time."""
+    mine = await admit(client, admin, first="Mine")
+    theirs = await admit(client, admin, first="Theirs")
+
+    phone = f"0755{uuid4().int % 1000000:06d}"
+    linked = await client.post(
+        f"/api/v1/students/{mine}/guardians",
+        json={
+            "guardian": {"full_name": "Asha Mwanjala", "phone": phone},
+            "link": {"relationship": "mother", "is_primary": True},
+        },
+        headers=admin,
+    )
+    guardian_id = linked.json()["guardian_id"]
+    await _add_user(
+        owner_session,
+        school_id=setup["school_id"],
+        name="Asha Mwanjala",
+        role="guardian",
+        phone=phone,
+        guardian_id=guardian_id,
+    )
+    await owner_session.commit()
+
+    guardian = await token(client, email=phone, subdomain=setup["subdomain"])
+
+    children = await client.get("/api/v1/guardians/me/children", headers=guardian)
+    assert [child["full_name"] for child in children.json()] == ["Mine Mwanjala"]
+
+    own = await client.get(f"/api/v1/students/{mine}", headers=guardian)
+    assert own.status_code == 200
+
+    # A 404, not a 403: a guardian probing ids must not be able to tell a
+    # child who exists from one who does not.
+    other = await client.get(f"/api/v1/students/{theirs}", headers=guardian)
+    assert other.status_code == 404
+
+
+# --------------------------------------------------------------------------
+# Health
+# --------------------------------------------------------------------------
+async def test_a_bursar_cannot_read_a_childs_health(client, setup, admin) -> None:
+    """Children's health data is sensitive personal data under the Personal
+    Data Protection Act, 2022. A bursar chasing arrears has no business with
+    it."""
+    student_id = await admit(client, admin)
+    await client.put(
+        f"/api/v1/students/{student_id}/health",
+        json={"allergies": "Peanuts", "emergency_plan": "Inhaler in the office"},
+        headers=admin,
+    )
+
+    bursar = await token(client, email=setup["bursar_email"], subdomain=setup["subdomain"])
+
+    direct = await client.get(f"/api/v1/students/{student_id}/health", headers=bursar)
+    assert direct.status_code == 403
+
+    profile = await client.get(f"/api/v1/students/{student_id}", headers=bursar)
+    assert profile.status_code == 200, "the rest of the record is still readable"
+    assert profile.json()["health"] is None
+
+
+async def test_a_class_teacher_can_read_health_for_their_own_class(client, setup, admin) -> None:
+    """An asthma plan is no use locked in an office."""
+    student_id = await admit(client, admin)
+    await enrol(client, admin, setup, student_id, class_group=setup["blue"])
+    await client.put(
+        f"/api/v1/students/{student_id}/health",
+        json={"chronic_conditions": "Asthma"},
+        headers=admin,
+    )
+
+    teacher = await token(client, email=setup["teacher_email"], subdomain=setup["subdomain"])
+    response = await client.get(f"/api/v1/students/{student_id}/health", headers=teacher)
+
+    assert response.status_code == 200
+    assert response.json()["chronic_conditions"] == "Asthma"
+
+
+async def test_reading_health_is_audited_and_the_values_are_not_copied_into_the_log(
+    client, setup, admin, owner_session
+) -> None:
+    """Who opened a child's health record is a question a school may have to
+    answer. What it says is not something to duplicate into an audit row."""
+    student_id = await admit(client, admin)
+    await client.put(
+        f"/api/v1/students/{student_id}/health",
+        json={"allergies": "Penicillin"},
+        headers=admin,
+    )
+    await client.get(f"/api/v1/students/{student_id}/health", headers=admin)
+
+    rows = (
+        await owner_session.execute(
+            text(
+                "SELECT action, changed FROM audit_event "
+                " WHERE entity_id = :id AND action LIKE 'health.%' "
+                " ORDER BY created_at"
+            ),
+            {"id": student_id},
+        )
+    ).all()
+
+    actions = [row.action for row in rows]
+    assert "health.updated" in actions
+    assert "health.read" in actions
+    serialised = str([row.changed for row in rows])
+    assert "Penicillin" not in serialised
+
+
+# --------------------------------------------------------------------------
+# Emergency contacts
+# --------------------------------------------------------------------------
+async def test_emergency_contacts_are_ordered_and_one_is_first(client, setup, admin) -> None:
+    student_id = await admit(client, admin)
+
+    response = await client.put(
+        f"/api/v1/students/{student_id}/emergency-contacts",
+        json={
+            "contacts": [
+                {
+                    "full_name": "Asha Mwanjala",
+                    "relationship": "Mother",
+                    "phone": "0754118902",
+                    "priority": 1,
+                },
+                {
+                    "full_name": "Neighbour Mbwana",
+                    "relationship": "Neighbour",
+                    "phone": "0715440118",
+                    "priority": 2,
+                    "note": "Works nights, try after 2pm",
+                },
+            ]
+        },
+        headers=admin,
+    )
+
+    assert response.status_code == 200
+    assert [contact["priority"] for contact in response.json()] == [1, 2]
+
+
+async def test_two_contacts_cannot_share_a_priority(client, setup, admin) -> None:
+    """Three numbers in no particular order is three numbers nobody knows
+    which to ring first."""
+    student_id = await admit(client, admin)
+
+    response = await client.put(
+        f"/api/v1/students/{student_id}/emergency-contacts",
+        json={
+            "contacts": [
+                {
+                    "full_name": "Asha Mwanjala",
+                    "relationship": "Mother",
+                    "phone": "0754118902",
+                    "priority": 1,
+                },
+                {
+                    "full_name": "Said Mwanjala",
+                    "relationship": "Father",
+                    "phone": "0715440118",
+                    "priority": 1,
+                },
+            ]
+        },
+        headers=admin,
+    )
+
+    assert response.status_code == 422
+    assert "same priority" in response.json()["detail"]
+
+
+async def test_somebody_has_to_be_first_to_call(client, setup, admin) -> None:
+    student_id = await admit(client, admin)
+
+    response = await client.put(
+        f"/api/v1/students/{student_id}/emergency-contacts",
+        json={
+            "contacts": [
+                {
+                    "full_name": "Rehema Mbwana",
+                    "relationship": "Aunt",
+                    "phone": "0754118902",
+                    "priority": 2,
+                },
+            ]
+        },
+        headers=admin,
+    )
+
+    assert response.status_code == 422
+    assert "first to call" in response.json()["detail"]
+
+
+# --------------------------------------------------------------------------
+# The checklist and the school's own fields
+# --------------------------------------------------------------------------
+async def test_the_checklist_names_what_is_missing(client, setup, admin) -> None:
+    student_id = await admit(client, admin)
+
+    response = await client.get(f"/api/v1/students/{student_id}/checklist", headers=admin)
+
+    body = response.json()
+    assert body["complete"] is False
+    assert "Birth certificate" in body["missing"]
+    assert "At least one guardian" in body["missing"]
+    assert "An emergency contact" in body["missing"]
+
+
+async def test_a_boarders_checklist_asks_for_more_than_a_day_pupils(client, setup, admin) -> None:
+    day = await admit(client, admin, first="Day")
+    await enrol(client, admin, setup, day, residency="day")
+    boarder = await admit(client, admin, first="Boarder")
+    await enrol(client, admin, setup, boarder, residency="boarder")
+
+    day_list = await client.get(f"/api/v1/students/{day}/checklist", headers=admin)
+    boarder_list = await client.get(f"/api/v1/students/{boarder}/checklist", headers=admin)
+
+    assert "Boarder health form" not in day_list.json()["missing"]
+    assert "Boarder health form" in boarder_list.json()["missing"]
+
+
+async def test_recording_a_document_clears_its_line(client, setup, admin) -> None:
+    student_id = await admit(client, admin)
+
+    await client.post(
+        f"/api/v1/students/{student_id}/documents",
+        json={
+            "kind": "birth_certificate",
+            "file_url": "https://example.invalid/bc.jpg",
+            "file_name": "bc.jpg",
+        },
+        headers=admin,
+    )
+    checklist = await client.get(f"/api/v1/students/{student_id}/checklist", headers=admin)
+
+    assert "Birth certificate" not in checklist.json()["missing"]
+
+
+async def test_a_custom_field_is_checked_against_its_declared_kind(client, setup, admin) -> None:
+    """The difference between a bounded custom field and a free-text dump
+    nobody can report on."""
+    student_id = await admit(client, admin)
+
+    good = await client.put(
+        f"/api/v1/students/{student_id}/fields",
+        json={"values": {"uniform_size": "M"}},
+        headers=admin,
+    )
+    bad = await client.put(
+        f"/api/v1/students/{student_id}/fields",
+        json={"values": {"uniform_size": "XXL"}},
+        headers=admin,
+    )
+    unknown = await client.put(
+        f"/api/v1/students/{student_id}/fields",
+        json={"values": {"favourite_colour": "blue"}},
+        headers=admin,
+    )
+
+    assert good.status_code == 200
+    assert good.json()["uniform_size"] == "M"
+    assert bad.status_code == 422
+    assert "S, M, L" in bad.json()["detail"]
+    assert unknown.status_code == 422
+    assert "no field called favourite_colour" in unknown.json()["detail"]
+
+
+async def test_setting_a_field_twice_overwrites_rather_than_duplicating(
+    client, setup, admin
+) -> None:
+    student_id = await admit(client, admin)
+
+    await client.put(
+        f"/api/v1/students/{student_id}/fields",
+        json={"values": {"uniform_size": "S"}},
+        headers=admin,
+    )
+    second = await client.put(
+        f"/api/v1/students/{student_id}/fields",
+        json={"values": {"uniform_size": "L"}},
+        headers=admin,
+    )
+
+    assert second.json() == {"uniform_size": "L"}
+
+
+# --------------------------------------------------------------------------
+# Tenancy
+# --------------------------------------------------------------------------
+async def test_a_child_at_another_school_is_a_404(client, setup, admin, owner_session) -> None:
+    other = await make_school(owner_session, name="Tumaini", subdomain=f"oth{uuid4().hex[:6]}")
+    student_id = uuid4()
+    await owner_session.execute(
+        text(
+            "INSERT INTO student (id, school_id, admission_no, first_name, surname, "
+            " date_of_birth, sex, status, nationality, arrears_brought_forward, "
+            " created_at, updated_at) "
+            "VALUES (:id, :school_id, 'T/0001', 'Elsewhere', 'Child', :dob, 'f', 'active', "
+            " 'Tanzanian', 0, now(), now())"
+        ),
+        {"id": student_id, "school_id": other, "dob": date(2018, 1, 1)},
+    )
+    await owner_session.commit()
+
+    response = await client.get(f"/api/v1/students/{student_id}", headers=admin)
+
+    assert response.status_code == 404
+
+    await owner_session.execute(text("DELETE FROM school WHERE id = :id"), {"id": other})
+    await owner_session.commit()

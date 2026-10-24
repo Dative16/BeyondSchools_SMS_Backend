@@ -13,13 +13,22 @@ more.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.school import School
+from app.domain.registration import (
+    DocumentRequirement as DocumentRequirementFacts,
+)
+from app.domain.registration import (
+    FieldDefinition,
+    FieldKind,
+    FieldScope,
+)
+from app.models.custom_field import SchoolField
+from app.models.school import DocumentRequirement, School
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,3 +105,106 @@ class SqlSchoolRepository:
             )
         ).one()
         return int(row.value)
+
+
+class SqlRegistrationSettingsRepository:
+    """A school's own checklist and its own fields.
+
+    Separate from `SqlSchoolRepository` because these are read by three
+    services — students, admissions and the settings screen — and none of them
+    wants the rest of the school record to come along.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    # --- the document checklist ------------------------------------------
+    async def document_requirements(
+        self, *, active_only: bool = True
+    ) -> list[DocumentRequirement]:
+        stmt = select(DocumentRequirement).order_by(
+            DocumentRequirement.sort_order, DocumentRequirement.label
+        )
+        if active_only:
+            stmt = stmt.where(DocumentRequirement.is_active.is_(True))
+        return list((await self._session.execute(stmt)).scalars().all())
+
+    async def replace_document_requirements(
+        self, *, school_id: UUID, rows: list[dict[str, Any]]
+    ) -> list[DocumentRequirement]:
+        """Replace the whole checklist.
+
+        A set rather than one row at a time: the screen shows all of it, and a
+        partial update is how a school ends up still demanding a document it
+        removed last term.
+        """
+        await self._session.execute(text("DELETE FROM document_requirement"))
+        written: list[DocumentRequirement] = []
+        for row in rows:
+            requirement = DocumentRequirement(school_id=school_id, **row)
+            self._session.add(requirement)
+            written.append(requirement)
+        await self._session.flush()
+        return written
+
+    # --- custom fields ----------------------------------------------------
+    async def fields(self, *, scope: FieldScope | None = None) -> list[SchoolField]:
+        stmt = select(SchoolField).order_by(SchoolField.sort_order, SchoolField.label)
+        if scope is not None:
+            stmt = stmt.where(SchoolField.scope == scope)
+        return list((await self._session.execute(stmt)).scalars().all())
+
+    async def field(self, field_id: UUID) -> SchoolField | None:
+        return await self._session.get(SchoolField, field_id)
+
+    async def field_by_key(self, *, scope: FieldScope, key: str) -> SchoolField | None:
+        return (
+            await self._session.execute(
+                select(SchoolField).where(
+                    SchoolField.scope == scope, SchoolField.key == key
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def add_field(self, **values: Any) -> SchoolField:
+        field = SchoolField(**values)
+        self._session.add(field)
+        await self._session.flush()
+        return field
+
+    async def field_definitions(
+        self, *, scope: FieldScope | None = None, include_sensitive: bool = True
+    ) -> list[FieldDefinition]:
+        """The fields in the shape the rules want.
+
+        A translation on purpose: `app/domain/registration.py` must not import
+        a SQLAlchemy model, so the repository hands it plain facts.
+        """
+        return [
+            FieldDefinition(
+                field_id=field.id,
+                key=field.key,
+                label=field.label,
+                kind=FieldKind(field.kind),
+                scope=FieldScope(field.scope),
+                options=tuple(field.options or ()),
+                required_at_registration=field.required_at_registration,
+                is_sensitive=field.is_sensitive,
+                is_active=field.is_active,
+            )
+            for field in await self.fields(scope=scope)
+            if include_sensitive or not field.is_sensitive
+        ]
+
+    async def requirement_facts(self) -> list[DocumentRequirementFacts]:
+        return [
+            DocumentRequirementFacts(
+                requirement_id=row.id,
+                kind=row.kind,
+                label=row.label,
+                is_required=row.is_required,
+                boarders_only=row.boarders_only,
+                level_id=row.level_id,
+            )
+            for row in await self.document_requirements()
+        ]

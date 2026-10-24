@@ -612,24 +612,17 @@ class AuthService:
     # Internals
     # ----------------------------------------------------------------------
     async def _principal_for(self, user: AppUser) -> Principal:
-        """Assemble the principal a token speaks for.
-
-        A teacher's class groups are resolved here, once per sign-in or
-        refresh, rather than on every request. They change when a timetable
-        changes, which is rare, and the 15-minute token is how long a stale set
-        can survive.
-        """
-        class_group_ids: frozenset[UUID] = frozenset()
-        if user.role in (Role.CLASS_TEACHER, Role.SUBJECT_TEACHER):
-            class_group_ids = await self._users.class_group_ids_for(user.id)
-
+        """Assemble the principal a token speaks for."""
+        # A teacher's classes are deliberately absent: the token does not
+        # carry them, so resolving them here would be a query at every sign-in
+        # whose answer goes nowhere. The students service fills the scope in
+        # per request, where it is used.
         return Principal(
             user_id=user.id,
             school_id=user.school_id,
             role=user.role,
             student_id=user.student_id,
             guardian_id=user.guardian_id,
-            class_group_ids=class_group_ids,
         )
 
     async def _open_session(

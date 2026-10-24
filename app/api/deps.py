@@ -36,10 +36,17 @@ from app.integrations.sms.provider import get_sms_sender
 from app.repositories.academic import SqlAcademicRepository
 from app.repositories.audit import SqlAuditRepository
 from app.repositories.base import SqlAlchemyUnitOfWork
-from app.repositories.schools import PublicSchool, SqlSchoolRepository
+from app.repositories.guardians import SqlGuardianRepository
+from app.repositories.schools import (
+    PublicSchool,
+    SqlRegistrationSettingsRepository,
+    SqlSchoolRepository,
+)
+from app.repositories.students import SqlStudentRepository
 from app.repositories.users import SqlUserRepository
 from app.services.academic import AcademicService
 from app.services.auth import AuthService, RequestContext
+from app.services.students import StudentService
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
@@ -282,3 +289,18 @@ async def academic_service(session: TenantSessionDep) -> AcademicService:
 
 
 AcademicServiceDep = Annotated[AcademicService, Depends(academic_service)]
+
+
+async def student_service(session: TenantSessionDep) -> StudentService:
+    """Students, enrolments, guardians and the detail around them."""
+    return StudentService(
+        uow=SqlAlchemyUnitOfWork(session),
+        students=SqlStudentRepository(session),
+        guardians=SqlGuardianRepository(session),
+        schools=SqlSchoolRepository(session),
+        settings_repo=SqlRegistrationSettingsRepository(session),
+        audit=SqlAuditRepository(session),
+    )
+
+
+StudentServiceDep = Annotated[StudentService, Depends(student_service)]
