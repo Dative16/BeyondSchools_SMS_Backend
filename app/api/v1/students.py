@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from decimal import Decimal
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -73,7 +73,9 @@ async def list_students(
     student_status: Annotated[str | None, Query(alias="status")] = None,
     residency: Annotated[Residency | None, Query()] = None,
     uses_transport: Annotated[bool | None, Query()] = None,
-    in_arrears: Annotated[bool | None, Query()] = None,
+    fee_status: Annotated[
+        Literal["settled", "part_paid", "in_arrears"] | None, Query()
+    ] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = 25,
 ) -> Page[RollRowResponse]:
@@ -96,7 +98,7 @@ async def list_students(
             status=student_status,
             residency=residency,
             uses_transport=uses_transport,
-            in_arrears=in_arrears,
+            fee_status=fee_status,
         )
     except (NotAllowed, NotFound) as exc:
         raise _handle(exc) from exc

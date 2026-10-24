@@ -68,8 +68,12 @@ class RollFilters:
     status: str | None = None
     residency: Residency | None = None
     uses_transport: bool | None = None
-    #: Only children whose current-year invoices leave a balance.
-    in_arrears: bool | None = None
+    #: settled | part_paid | in_arrears. Replaces an earlier `in_arrears`
+    #: boolean, which claimed to mean arrears and actually meant "owes
+    #: anything" — a child billed yesterday and not yet due was counted as
+    #: being in arrears, which is the difference between a reminder and an
+    #: accusation.
+    fee_status: str | None = None
 
 
 class StudentRepository(Protocol):
@@ -162,12 +166,30 @@ class SqlStudentRepository:
         if filters.uses_transport is not None:
             clauses.append("e.uses_transport = :uses_transport")
             params["uses_transport"] = filters.uses_transport
-        if filters.in_arrears:
-            clauses.append(
+        if filters.fee_status:
+            # Arrears needs the due date; a balance alone is not arrears.
+            owing = (
                 "EXISTS (SELECT 1 FROM invoice i "
                 "         WHERE i.student_id = s.id AND NOT i.is_void "
-                "           AND i.billed > i.settled)"
+                "           AND i.billed > i.settled{extra})"
             )
+            if filters.fee_status == "in_arrears":
+                clauses.append(owing.format(extra=" AND i.due_date < current_date"))
+            elif filters.fee_status == "part_paid":
+                # Owes something, but nothing has fallen due yet.
+                clauses.append(owing.format(extra=""))
+                clauses.append(
+                    "NOT " + owing.format(extra=" AND i.due_date < current_date")
+                )
+            elif filters.fee_status == "settled":
+                # Billed at all, and owing nothing. A child with no invoice is
+                # not settled, they are unbilled, and lumping the two together
+                # would hide a whole class the term run missed.
+                clauses.append(
+                    "EXISTS (SELECT 1 FROM invoice i "
+                    "         WHERE i.student_id = s.id AND NOT i.is_void)"
+                )
+                clauses.append("NOT " + owing.format(extra=""))
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         return where, params

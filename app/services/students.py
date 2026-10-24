@@ -188,7 +188,7 @@ class StudentService:
         status: str | None = None,
         residency: Residency | None = None,
         uses_transport: bool | None = None,
-        in_arrears: bool | None = None,
+        fee_status: str | None = None,
     ) -> tuple[list[RollRow], int]:
         """The students screen.
 
@@ -207,7 +207,7 @@ class StudentService:
             status=status,
             residency=residency,
             uses_transport=uses_transport,
-            in_arrears=in_arrears,
+            fee_status=fee_status,
         )
 
         if principal.role in (Role.CLASS_TEACHER, Role.SUBJECT_TEACHER):

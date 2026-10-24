@@ -6,7 +6,7 @@ health sits behind its own capability rather than riding along with the rest
 of a profile.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from uuid import uuid4
 
 import pytest
@@ -907,3 +907,120 @@ async def test_a_child_at_another_school_is_a_404(client, setup, admin, owner_se
 
     await owner_session.execute(text("DELETE FROM school WHERE id = :id"), {"id": other})
     await owner_session.commit()
+
+
+# --------------------------------------------------------------------------
+# Filtering the roll by what a family owes
+# --------------------------------------------------------------------------
+async def _bill(owner_session, *, school_id, student_id, enrolment_id, billed, settled, due):
+    """One invoice with a known balance and a known due date."""
+    invoice_id = uuid4()
+    await owner_session.execute(
+        text(
+            "INSERT INTO invoice (id, school_id, reference, kind, student_id, "
+            " enrolment_id, issued_on, due_date, currency, billed, settled, is_void, "
+            " created_at, updated_at) "
+            "VALUES (:id, :school_id, :ref, 'term', :student, :enrolment, "
+            " current_date - 30, :due, 'TZS', 0, 0, false, now(), now())"
+        ),
+        {
+            "id": invoice_id,
+            "school_id": school_id,
+            "ref": f"INV-{uuid4().hex[:8]}",
+            "student": student_id,
+            "enrolment": enrolment_id,
+            "due": due,
+        },
+    )
+    # billed and settled are derived, so they are written as a line and a payment.
+    await owner_session.execute(
+        text(
+            "INSERT INTO invoice_line (id, school_id, invoice_id, item, amount, kind, "
+            " sort_order, created_at, updated_at) "
+            "VALUES (gen_random_uuid(), :school_id, :invoice, 'Tuition', :amount, "
+            " 'charge', 0, now(), now())"
+        ),
+        {"school_id": school_id, "invoice": invoice_id, "amount": billed},
+    )
+    if settled:
+        await owner_session.execute(
+            text(
+                "INSERT INTO payment (id, school_id, invoice_id, external_ref, amount, "
+                " applied, currency, channel, state, received_at, is_manual, "
+                " created_at, updated_at) "
+                "VALUES (gen_random_uuid(), :school_id, :invoice, :ref, :amount, "
+                " :amount, 'TZS', 'mpesa', 'settled', now(), false, now(), now())"
+            ),
+            {
+                "school_id": school_id,
+                "invoice": invoice_id,
+                "ref": f"MOCK-{uuid4().hex[:8]}",
+                "amount": settled,
+            },
+        )
+    return invoice_id
+
+
+async def test_a_balance_that_is_not_yet_due_is_not_arrears(
+    client, setup, admin, owner_session
+) -> None:
+    """The distinction the old `in_arrears` boolean collapsed: it matched any
+    unpaid balance, so a child billed yesterday was listed beside one who had
+    owed since February. That is the difference between a reminder and an
+    accusation, and a bursar ringing the second list does not want the first."""
+    paid = await admit(client, admin, first="Paid")
+    owing = await admit(client, admin, first="Owing")
+    overdue = await admit(client, admin, first="Overdue")
+
+    not_yet_due = date.today() + timedelta(days=10)
+    past_due = date.today() - timedelta(days=5)
+
+    for student_id, billed, settled, due in (
+        (paid, "300000", "300000", not_yet_due),
+        (owing, "300000", "100000", not_yet_due),
+        (overdue, "300000", "100000", past_due),
+    ):
+        enrolment = await client.post(
+            "/api/v1/enrolments",
+            json={
+                "student_id": student_id,
+                "academic_year_id": str(setup["year_id"]),
+                "class_group_id": str(setup["blue"]),
+            },
+            headers=admin,
+        )
+        await _bill(
+            owner_session,
+            school_id=setup["school_id"],
+            student_id=student_id,
+            enrolment_id=enrolment.json()["id"],
+            billed=billed,
+            settled=settled,
+            due=due,
+        )
+    await owner_session.commit()
+
+    async def names(fee_status: str) -> set[str]:
+        response = await client.get(
+            "/api/v1/students", params={"fee_status": fee_status}, headers=admin
+        )
+        assert response.status_code == 200, response.text
+        return {row["first_name"] for row in response.json()["items"]}
+
+    assert await names("settled") == {"Paid"}
+    assert await names("part_paid") == {"Owing"}
+    assert await names("in_arrears") == {"Overdue"}
+
+
+async def test_a_child_with_no_invoice_at_all_is_not_settled(
+    client, setup, admin
+) -> None:
+    """Unbilled and settled look the same from a balance of zero, and lumping
+    them together would hide a whole class the term run missed."""
+    await admit(client, admin, first="Unbilled")
+
+    settled = await client.get(
+        "/api/v1/students", params={"fee_status": "settled"}, headers=admin
+    )
+
+    assert "Unbilled" not in {row["first_name"] for row in settled.json()["items"]}
