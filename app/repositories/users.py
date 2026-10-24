@@ -104,6 +104,10 @@ class UserRepository(Protocol):
     ) -> None: ...
 
     async def current_level_code(self, student_id: UUID) -> str | None: ...
+    async def add_applicant(self, *, school_id: UUID, phone: str) -> AppUser: ...
+    async def promote_applicant_to_guardian(
+        self, *, phone: str, guardian_id: UUID, full_name: str
+    ) -> UUID | None: ...
 
     async def guardian_has_child(self, guardian_id: UUID, student_id: UUID) -> bool: ...
 
@@ -416,6 +420,48 @@ class SqlUserRepository:
         await self._session.execute(
             update(OtpChallenge).where(OtpChallenge.id == challenge_id).values(**values)
         )
+
+    async def add_applicant(self, *, school_id: UUID, phone: str) -> AppUser:
+        """A login for somebody with no account and a verified phone number.
+
+        No password: they sign in by one-time code, which is the only
+        credential a parent filling in the public form has. The row exists
+        because a session needs a user to hang off — and because at enrolment
+        it is promoted to a guardian login rather than replaced, which is what
+        makes "one password, never two" true for the family.
+        """
+        user = AppUser(
+            school_id=school_id,
+            full_name="Applicant",
+            phone=phone,
+            role=Role.APPLICANT,
+            is_active=True,
+        )
+        self._session.add(user)
+        await self._session.flush()
+        return user
+
+    async def promote_applicant_to_guardian(
+        self, *, phone: str, guardian_id: UUID, full_name: str
+    ) -> UUID | None:
+        """Turn the account that filled in the form into the family's login.
+
+        The same phone, the same row, a wider role. A parent who applied in
+        November and signs in to pay fees in January uses what they already
+        have, and a school never has two accounts for one handset.
+        """
+        row = (
+            await self._session.execute(
+                select(AppUser).where(AppUser.phone == phone, AppUser.role == Role.APPLICANT)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        row.role = Role.GUARDIAN
+        row.guardian_id = guardian_id
+        row.full_name = full_name
+        await self._session.flush()
+        return row.id
 
 
 def _now() -> datetime:

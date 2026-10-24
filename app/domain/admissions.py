@@ -13,7 +13,8 @@ can be enumerated in a test without a database.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
+from decimal import Decimal
 from enum import StrEnum
 from uuid import UUID
 
@@ -227,3 +228,90 @@ def can_accept(*, state: ApplicationState, deposit_settled: bool) -> bool:
     accepted in the funnel.
     """
     return state is ApplicationState.OFFERED and deposit_settled
+
+
+# --------------------------------------------------------------------------
+# The offer
+# --------------------------------------------------------------------------
+#: How long a place is held. Long enough for a family to find the deposit,
+#: short enough that a school can plan its classes — and the reason the offer
+#: carries a date at all is that an offer nobody ever declines is a seat
+#: nobody can fill.
+OFFER_VALID_DAYS = 21
+
+
+def offer_expiry(*, offered_on: date, days: int = OFFER_VALID_DAYS) -> date:
+    return offered_on + timedelta(days=days)
+
+
+def offer_has_lapsed(*, expires_on: date | None, as_of: date) -> bool:
+    """A lapsed offer is not automatically withdrawn.
+
+    Deliberately: a deposit arriving a day late is a pupil, not an error, and
+    a registrar who can see "expired three days ago" will take the money. This
+    answers a question for a screen, not for a scheduled job.
+    """
+    return expires_on is not None and expires_on < as_of
+
+
+@dataclass(frozen=True, slots=True)
+class OfferTerms:
+    """What a family is being asked to pay to hold the place."""
+
+    admission_no: str
+    deposit_due: Decimal
+    expires_on: date
+
+
+# --------------------------------------------------------------------------
+# Becoming a pupil
+# --------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class EnrolmentReadiness:
+    """Whether an accepted application can become a child on the roll."""
+
+    ready: bool
+    problems: tuple[str, ...]
+
+
+def readiness_to_enrol(
+    *,
+    state: ApplicationState,
+    has_level: bool,
+    has_class_group: bool,
+    has_guardian_details: bool,
+    admission_no: str | None,
+) -> EnrolmentReadiness:
+    """The last gate before a student record exists.
+
+    Checked here rather than left to the service's sequence, because this is
+    the step that creates a person: a child, a guardian, an enrolment and a
+    login, in one transaction. Getting halfway through it is the one failure
+    that leaves a school with a pupil nobody can find.
+    """
+    problems: list[str] = []
+
+    if state is not ApplicationState.ACCEPTED:
+        problems.append(
+            "only an accepted application becomes an enrolment, and acceptance "
+            "is the deposit arriving"
+        )
+    if not admission_no:
+        problems.append("no admission number was issued")
+    if not has_level:
+        problems.append("no level was applied for")
+    if not has_class_group:
+        problems.append("no class has been chosen for this child")
+    if not has_guardian_details:
+        problems.append("the guardian's name and phone are needed")
+
+    return EnrolmentReadiness(ready=not problems, problems=tuple(problems))
+
+
+def reference(*, year: int, sequence: int, prefix: str = "APP") -> str:
+    """Short and sayable over the phone: APP-2027-0043.
+
+    A parent ringing the school says this; a UUID does not survive being read
+    aloud twice.
+    """
+    return f"{prefix}-{year}-{sequence:04d}"

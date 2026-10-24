@@ -179,6 +179,10 @@ class Principal:
     role: Role
     student_id: UUID | None = None
     guardian_id: UUID | None = None
+    #: The application this session is for, and the only thing it may touch.
+    #: A parent filling in the public form has no account and no child yet —
+    #: this is what a verified phone number buys them.
+    application_id: UUID | None = None
     #: Class groups this person is the class teacher of, or teaches a subject
     #: in. Empty for everyone who is not a teacher.
     class_group_ids: frozenset[UUID] = field(default_factory=frozenset)

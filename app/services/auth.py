@@ -536,6 +536,72 @@ class AuthService:
             raise InvalidCredentials("this account no longer exists")
         return Me(full_name=user.full_name, must_change_password=user.must_change_password)
 
+    async def open_applicant_session(
+        self,
+        *,
+        school_id: UUID,
+        application_id: UUID,
+        phone: str,
+        context: RequestContext,
+    ) -> Session:
+        """A session for somebody filling in the public form.
+
+        Scoped to one application by the claim, so every route they can reach
+        takes it from the token and there is no id for them to change.
+
+        The login is created once per phone number and kept. At enrolment it
+        is promoted to the family's guardian account rather than replaced,
+        which is how a parent who applied in November signs in to pay fees in
+        January with what they already have.
+        """
+        async with self._uow:
+            user = await self._users.find_by_identifier(phone)
+            if user is None:
+                user = await self._users.add_applicant(school_id=school_id, phone=phone)
+            elif not user.is_active:
+                raise AccountLocked("this account can no longer sign in")
+
+            principal = Principal(
+                user_id=user.id,
+                school_id=school_id,
+                role=Role.APPLICANT,
+                application_id=application_id,
+            )
+            access = issue_access_token(principal)
+
+            refresh = generate_token()
+            now = datetime.now(UTC)
+            refresh_expires_at = now + timedelta(seconds=settings.REFRESH_TOKEN_TTL_SECONDS)
+            await self._users.store_refresh_token(
+                user_id=user.id,
+                school_id=school_id,
+                token_hash=hash_token(refresh),
+                expires_at=refresh_expires_at,
+                user_agent=context.user_agent,
+                ip=context.ip,
+            )
+            await self._audit.record(
+                school_id=school_id,
+                action="auth.applicant_session",
+                actor_user_id=user.id,
+                actor_role=Role.APPLICANT.value,
+                entity_type="application",
+                entity_id=application_id,
+                ip=context.ip,
+                user_agent=context.user_agent,
+            )
+            await self._uow.commit()
+
+            return Session(
+                access_token=access.token,
+                access_expires_at=access.expires_at,
+                refresh_token=refresh,
+                refresh_expires_at=refresh_expires_at,
+                principal=principal,
+                full_name=user.full_name,
+                must_change_password=False,
+            )
+
     # ----------------------------------------------------------------------
     # The handoff
     # ----------------------------------------------------------------------

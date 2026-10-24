@@ -35,9 +35,12 @@ from app.integrations.sms.base import SmsSender
 from app.integrations.sms.provider import get_sms_sender
 from app.integrations.storage import ObjectStore, get_object_store
 from app.repositories.academic import SqlAcademicRepository
+from app.repositories.admissions import SqlAdmissionsRepository
 from app.repositories.audit import SqlAuditRepository
 from app.repositories.base import SqlAlchemyUnitOfWork
+from app.repositories.fees import SqlFeesRepository
 from app.repositories.guardians import SqlGuardianRepository
+from app.repositories.payments import SqlPaymentRepository
 from app.repositories.schools import (
     PublicSchool,
     SqlRegistrationSettingsRepository,
@@ -46,7 +49,9 @@ from app.repositories.schools import (
 from app.repositories.students import SqlStudentRepository
 from app.repositories.users import SqlUserRepository
 from app.services.academic import AcademicService
+from app.services.admissions import AdmissionsService
 from app.services.auth import AuthService, RequestContext
+from app.services.invoicing import InvoicingService
 from app.services.students import StudentService
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -313,3 +318,57 @@ async def student_service(
 
 
 StudentServiceDep = Annotated[StudentService, Depends(student_service)]
+
+
+def _invoicing(session: AsyncSession) -> InvoicingService:
+    return InvoicingService(
+        uow=SqlAlchemyUnitOfWork(session),
+        fees=SqlFeesRepository(session),
+        payments=SqlPaymentRepository(session),
+        audit=SqlAuditRepository(session),
+    )
+
+
+async def invoicing_service(session: TenantSessionDep) -> InvoicingService:
+    """Raising bills and recording money, scoped by the token."""
+    return _invoicing(session)
+
+
+InvoicingServiceDep = Annotated[InvoicingService, Depends(invoicing_service)]
+
+
+def _admissions(session: AsyncSession) -> AdmissionsService:
+    return AdmissionsService(
+        uow=SqlAlchemyUnitOfWork(session),
+        admissions=SqlAdmissionsRepository(session),
+        students=SqlStudentRepository(session),
+        guardians=SqlGuardianRepository(session),
+        schools=SqlSchoolRepository(session),
+        settings_repo=SqlRegistrationSettingsRepository(session),
+        invoicing=_invoicing(session),
+        users=SqlUserRepository(session),
+        audit=SqlAuditRepository(session),
+    )
+
+
+async def admissions_service(session: TenantSessionDep) -> AdmissionsService:
+    """The funnel, scoped by the token: the registrar's screens."""
+    return _admissions(session)
+
+
+AdmissionsServiceDep = Annotated[AdmissionsService, Depends(admissions_service)]
+
+
+async def public_admissions_service(session: AuthSessionDep) -> AdmissionsService:
+    """The same funnel, scoped by the subdomain.
+
+    For the two steps that happen before a token exists: what the form should
+    ask for, and starting or resuming an application once a phone number has
+    been verified.
+    """
+    return _admissions(session)
+
+
+PublicAdmissionsServiceDep = Annotated[
+    AdmissionsService, Depends(public_admissions_service)
+]

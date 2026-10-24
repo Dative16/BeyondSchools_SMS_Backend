@@ -196,7 +196,9 @@ class SqlRegistrationSettingsRepository:
             if include_sensitive or not field.is_sensitive
         ]
 
-    async def requirement_facts(self) -> list[DocumentRequirementFacts]:
+    async def requirement_facts(
+        self, *, at_application: bool | None = None
+    ) -> list[DocumentRequirementFacts]:
         return [
             DocumentRequirementFacts(
                 requirement_id=row.id,
@@ -207,4 +209,5 @@ class SqlRegistrationSettingsRepository:
                 level_id=row.level_id,
             )
             for row in await self.document_requirements()
+            if at_application is None or row.ask_at_application == at_application
         ]

@@ -2,7 +2,16 @@
 
 from fastapi import APIRouter
 
-from app.api.v1 import academic, auth, enrolments, guardians, schools, students
+from app.api.v1 import (
+    academic,
+    admissions,
+    apply,
+    auth,
+    enrolments,
+    guardians,
+    schools,
+    students,
+)
 
 api_router = APIRouter()
 
@@ -12,8 +21,11 @@ api_router.include_router(academic.router, prefix="/academic", tags=["academic"]
 api_router.include_router(students.router, prefix="/students", tags=["students"])
 api_router.include_router(enrolments.router, prefix="/enrolments", tags=["students"])
 api_router.include_router(guardians.router, prefix="/guardians", tags=["guardians"])
+# The public form comes before the registrar's screens on purpose: it is the
+# only part of this API a stranger can reach.
+api_router.include_router(apply.router, prefix="/apply", tags=["apply"])
+api_router.include_router(admissions.router, prefix="/admissions", tags=["admissions"])
 
 # Each lands with its phase:
-#   1.5  admissions
 #   1.6  fees, payments, webhooks
 #   2    timetable, assignments, promotion, reports

@@ -683,6 +683,31 @@ async def _raise_term_invoice(
         )
 
 
+async def advance_admission_sequence(
+    session: AsyncSession, school_id: UUID, used: int
+) -> None:
+    """Tell the school's counter how many admission numbers are already gone.
+
+    This seed hands out MPS/2027/0001 upward from its own loop, and the API
+    issues the next number from . Without this the first
+    child admitted through the admissions funnel would be given 0001 again and
+    the insert would fail on the unique index.
+
+    The same step is needed for real: a school importing an existing roll has
+    to move the counter past its highest existing number, or its first new
+    admission collides with a pupil who has been there for years.
+    """
+    await session.execute(
+        text(
+            "INSERT INTO school_sequence (id, school_id, name, scope, value) "
+            "VALUES (gen_random_uuid(), :school_id, 'admission_no', :scope, :used) "
+            "ON CONFLICT (school_id, name, scope) "
+            "DO UPDATE SET value = GREATEST(school_sequence.value, :used)"
+        ),
+        {"school_id": school_id, "scope": str(YEAR), "used": used},
+    )
+
+
 async def attach_test_handset(session: AsyncSession, school_id: UUID) -> str | None:
     """Give one guardian a real phone number, if DEMO_GUARDIAN_PHONE is set.
 
@@ -1108,6 +1133,13 @@ async def main() -> None:
         await seed_fees(session, school_id, ids)
         await seed_registration_settings(session, school_id)
         await seed_children(session, school_id, ids)
+        enrolled = (
+            await session.execute(
+                text("SELECT count(*) FROM student WHERE school_id = :s"),
+                {"s": school_id},
+            )
+        ).scalar_one()
+        await advance_admission_sequence(session, school_id, int(enrolled))
         boarders, riders = await seed_boarders_and_buses(session, school_id)
         contacts, health_rows = await seed_health_and_contacts(session, school_id)
         await seed_suspense_payment(session, school_id)

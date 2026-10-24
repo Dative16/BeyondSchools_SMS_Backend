@@ -236,6 +236,8 @@ def _claims(
         claims["student_id"] = str(principal.student_id)
     if principal.guardian_id:
         claims["guardian_id"] = str(principal.guardian_id)
+    if principal.application_id:
+        claims["application_id"] = str(principal.application_id)
     if extra:
         claims.update(extra)
     return claims, jti, expires_at
@@ -337,6 +339,7 @@ def decode_access_token(token: str, *, audience: str = AUDIENCE_SMS) -> Principa
             role=role,
             student_id=as_uuid(claims.get("student_id")),
             guardian_id=as_uuid(claims.get("guardian_id")),
+            application_id=as_uuid(claims.get("application_id")),
         )
     except ValueError as exc:
         raise TokenError("token carries a malformed id") from exc
@@ -368,6 +371,7 @@ def discovery_document() -> dict[str, Any]:
             "role",
             "student_id",
             "guardian_id",
+            "application_id",
             "level",
         ],
         "response_types_supported": [],

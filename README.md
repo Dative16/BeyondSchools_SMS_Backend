@@ -124,6 +124,43 @@ Three behaviours worth knowing before changing this code:
   subdomain is that the session was pinned first. There is a test for exactly
   that.
 
+## Admissions
+
+Six states, and the two that matter are the ones nobody presses a button for.
+
+```
+started -> submitted -> screened -> offered -> accepted -> enrolled
+```
+
+**Acceptance is a deposit arriving**, not a decision. There is no accept
+endpoint: a bursar records the money, and the application moves itself. So an
+unpaid place cannot look accepted in the funnel, and nobody can mark one
+accepted by mistake.
+
+**Enrolment is one transaction** that creates a child, a guardian, an enrolment
+and a login together. Half of it is a pupil the roll cannot find or a parent
+who cannot sign in to pay — and the deposit has already been taken by then.
+
+The public form (`/api/v1/apply/*`) is reached by somebody with no account. A
+verified phone number is the whole credential, and the session it buys is
+scoped to one application, so none of those routes takes an application id.
+The form is four steps and about four minutes: anything longer does not get
+finished, and an unfinished application is a pupil the school never hears
+about. So the required list is short — a name, a date of birth, a sex, a level
+and a guardian who can be reached — and everything else is collected at a desk.
+
+Two behaviours worth knowing:
+
+- **A sibling is not a duplicate.** Screening scores name, date of birth and
+  guardian phone rather than matching them, and the commonest high score in a
+  real school is one phone with several children. A shared surname and phone
+  is noted; only a near-exact match is flagged, and nothing is ever merged
+  automatically.
+- **An admission number is burnt at the offer**, from a locked per-school
+  sequence, because the offer letter carries it. A school importing an
+  existing roll has to move that counter past its highest existing number —
+  `scripts/seed_demo.py` does exactly this, and shows what an import must do.
+
 ## Documents
 
 The bytes never pass through this API. A client asks for an upload URL, PUTs
