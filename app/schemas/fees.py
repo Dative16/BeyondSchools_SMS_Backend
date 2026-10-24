@@ -276,6 +276,9 @@ class CollectionResponse(BaseModel):
     outstanding: Decimal
     overdue: Decimal
     students_in_arrears: int
+    #: Of those, the ones more than sixty days past due — the figure that
+    #: decides whether arrears are a timing problem or a collection problem.
+    students_over_60_days: int
     collected_percent: int
 
 
@@ -293,6 +296,28 @@ class SuspensePayment(BaseModel):
     payer_reference: str | None
     received_at: datetime
     reason: str | None
+
+
+class RecentPayment(BaseModel):
+    """One line of the dashboard's "Payments received" card.
+
+    Carries the child and the class rather than the invoice reference: a bursar
+    recognises "Neema Mwanjala, Standard 4 Blue" and recognises nothing at all
+    about INV/Term1/0184.
+    """
+
+    id: UUID
+    amount: Decimal
+    applied: Decimal
+    channel: str
+    external_ref: str
+    received_at: datetime
+    is_manual: bool
+    invoice_id: UUID | None
+    reference: str | None
+    student_id: UUID | None
+    student_name: str | None
+    class_name: str | None
 
 
 class MatchSuspenseRequest(BaseModel):

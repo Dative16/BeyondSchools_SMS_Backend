@@ -486,10 +486,14 @@ async def collection(
     principal: PrincipalDep,
     service: InvoicingServiceDep,
     academic_year_id: Annotated[UUID | None, Query()] = None,
+    as_of: Annotated[date | None, Query()] = None,
 ) -> CollectionResponse:
-    """The dashboard's money tiles."""
+    """The dashboard's money tiles, read against `as_of` — today by default,
+    and the same day the arrears list beneath them is read against."""
     try:
-        totals = await service.collection(principal, academic_year_id=academic_year_id)
+        totals = await service.collection(
+            principal, academic_year_id=academic_year_id, as_of=as_of
+        )
     except (NotAllowed, NotFound) as exc:
         raise _handle(exc) from exc
 
@@ -503,5 +507,6 @@ async def collection(
         outstanding=max(billed - settled, Decimal(0)),
         overdue=Decimal(totals["overdue"]),
         students_in_arrears=totals["students_in_arrears"],
+        students_over_60_days=totals["students_over_60_days"],
         collected_percent=percent,
     )

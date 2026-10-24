@@ -107,12 +107,13 @@ class FeesRepository(Protocol):
     async def lines(self, invoice_id: UUID) -> list[dict[str, Any]]: ...
     async def payments_for(self, invoice_id: UUID) -> list[dict[str, Any]]: ...
     async def payment(self, payment_id: UUID) -> dict[str, Any] | None: ...
+    async def recent_payments(self, *, limit: int) -> list[dict[str, Any]]: ...
     async def statement(self, student_id: UUID) -> list[dict[str, Any]]: ...
     async def arrears(
         self, *, as_of: date, limit: int, offset: int
     ) -> tuple[list[dict[str, Any]], int]: ...
     async def collection_totals(
-        self, academic_year_id: UUID | None
+        self, academic_year_id: UUID | None, *, as_of: date
     ) -> dict[str, Decimal]: ...
 
     # --- corrections ------------------------------------------------------
@@ -613,26 +614,41 @@ class SqlFeesRepository:
         )
         return [dict(row._mapping) for row in rows], int(total or 0)
 
-    async def collection_totals(self, academic_year_id: UUID | None) -> dict[str, Decimal]:
-        """The dashboard's two money tiles, and the arrears count beneath them."""
+    async def collection_totals(
+        self, academic_year_id: UUID | None, *, as_of: date
+    ) -> dict[str, Decimal]:
+        """The dashboard's two money tiles, and the arrears counts beneath them.
+
+        The over-60 count comes back with the rest rather than being worked out
+        from a page of the arrears list: a dashboard that fetched a hundred rows
+        to count nine of them would be slower than the screen it sits on, and
+        would quietly undercount as soon as the list paginated.
+
+        `as_of` is an argument for the same reason it is one on `arrears`: a
+        figure read against "whenever the query ran" cannot be reconciled with
+        a report, and cannot be tested at all.
+        """
         row = (
             await self._session.execute(
                 text(
                     "SELECT coalesce(sum(i.billed), 0) AS billed, "
                     "       coalesce(sum(i.settled), 0) AS settled, "
-                    "       coalesce(sum(CASE WHEN i.due_date < current_date "
+                    "       coalesce(sum(CASE WHEN i.due_date < CAST(:as_of AS date) "
                     "                         THEN i.billed - i.settled ELSE 0 END), 0) "
                     "         AS overdue, "
                     "       count(DISTINCT CASE WHEN i.billed > i.settled "
-                    "                           AND i.due_date < current_date "
-                    "                      THEN i.student_id END) AS students_in_arrears "
+                    "                           AND i.due_date < CAST(:as_of AS date) "
+                    "                      THEN i.student_id END) AS students_in_arrears, "
+                    "       count(DISTINCT CASE WHEN i.billed > i.settled "
+                    "                           AND i.due_date < CAST(:as_of AS date) - 60 "
+                    "                      THEN i.student_id END) AS students_over_60_days "
                     "  FROM invoice i "
                     "  LEFT JOIN term t ON t.id = i.term_id "
                     " WHERE NOT i.is_void "
                     "   AND (CAST(:year AS uuid) IS NULL "
                     "        OR t.academic_year_id = CAST(:year AS uuid))"
                 ),
-                {"year": academic_year_id},
+                {"year": academic_year_id, "as_of": as_of},
             )
         ).one()
         return {
@@ -640,6 +656,7 @@ class SqlFeesRepository:
             "settled": Decimal(row.settled),
             "overdue": Decimal(row.overdue),
             "students_in_arrears": row.students_in_arrears,
+            "students_over_60_days": row.students_over_60_days,
         }
 
     # --- corrections ------------------------------------------------------
@@ -713,3 +730,36 @@ class SqlFeesRepository:
             )
         ).one_or_none()
         return dict(row._mapping) if row else None
+
+    async def recent_payments(self, *, limit: int) -> list[dict[str, Any]]:
+        """The money that came in, newest first — the dashboard's second card.
+
+        Joined out to the child and the class because that is what makes the
+        row readable: a bursar recognises "Neema Mwanjala, Standard 4 Blue"
+        and recognises nothing at all about an invoice reference.
+
+        Reversed payments are left out. A reversal is not a receipt, and a
+        feed that showed one would have a bursar chasing a payment that was
+        already undone.
+        """
+        rows = await self._session.execute(
+            text(
+                "SELECT p.id, p.amount, p.applied, p.channel::text AS channel, "
+                "       p.external_ref, p.received_at, p.is_manual, "
+                "       i.id AS invoice_id, i.reference, "
+                "       s.id AS student_id, "
+                "       trim(coalesce(s.first_name, '') || ' ' || "
+                "            coalesce(s.surname, '')) AS student_name, "
+                "       cg.name AS class_name "
+                "  FROM payment p "
+                "  LEFT JOIN invoice i ON i.id = p.invoice_id "
+                "  LEFT JOIN student s ON s.id = i.student_id "
+                "  LEFT JOIN enrolment e ON e.id = i.enrolment_id "
+                "  LEFT JOIN class_group cg ON cg.id = e.class_group_id "
+                " WHERE p.state = 'settled' AND p.reversed_at IS NULL "
+                " ORDER BY p.received_at DESC "
+                " LIMIT :limit"
+            ),
+            {"limit": limit},
+        )
+        return [dict(row._mapping) for row in rows]

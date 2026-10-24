@@ -15,13 +15,14 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import InvoicingServiceDep, PrincipalDep, request_context
 from app.domain.payments import Channel
 from app.schemas.fees import (
     InvoiceTotalsResponse,
     MatchSuspenseRequest,
+    RecentPayment,
     RecordPaymentRequest,
     SuspensePayment,
 )
@@ -108,6 +109,28 @@ async def suspense(
     except (NotAllowed, NotFound) as exc:
         raise _handle(exc) from exc
     return [SuspensePayment(**row) for row in rows]
+
+
+@router.get(
+    "/recent",
+    response_model=list[RecentPayment],
+    summary="The money that came in",
+)
+async def recent(
+    principal: PrincipalDep,
+    service: InvoicingServiceDep,
+    limit: Annotated[int, Query(ge=1, le=50)] = 10,
+) -> list[RecentPayment]:
+    """The dashboard's second card, newest first.
+
+    Reversed payments are left out: a reversal is not a receipt, and a feed
+    that showed one would have a bursar chasing money that was already undone.
+    """
+    try:
+        rows = await service.recent_payments(principal, limit=limit)
+    except (NotAllowed, NotFound) as exc:
+        raise _handle(exc) from exc
+    return [RecentPayment(**row) for row in rows]
 
 
 @router.post(

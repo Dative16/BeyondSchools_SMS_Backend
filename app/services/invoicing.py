@@ -668,10 +668,36 @@ class InvoicingService:
         )
 
     async def collection(
-        self, principal: Principal, *, academic_year_id: UUID | None = None
+        self,
+        principal: Principal,
+        *,
+        academic_year_id: UUID | None = None,
+        as_of: date | None = None,
     ) -> dict[str, Any]:
+        """The dashboard's money tiles, read against a given day.
+
+        The day is an argument here for the same reason it is one on `arrears`:
+        the two have to agree, and a tile computed against "now" while the list
+        beneath it is computed against a date is how a bursar ends up with two
+        different arrears figures on one screen.
+        """
         self._require(principal, Permission.INVOICE_READ)
-        return await self._fees.collection_totals(academic_year_id)
+        return await self._fees.collection_totals(
+            academic_year_id, as_of=as_of or date.today()
+        )
+
+    async def recent_payments(
+        self, principal: Principal, *, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """The money that came in, newest first.
+
+        Behind `payment:read` rather than `invoice:read`: this is a list of who
+        paid what, which is a different question from what a child owes, and a
+        teacher who can see a balance has no business reading the school's
+        takings.
+        """
+        self._require(principal, Permission.PAYMENT_READ)
+        return await self._fees.recent_payments(limit=limit)
 
     # ----------------------------------------------------------------------
     # Corrections

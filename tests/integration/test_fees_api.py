@@ -787,3 +787,111 @@ async def test_a_voided_invoice_does_not_count_towards_a_balance(
     assert len(body["invoices"]) == 1, "the record stays visible"
     assert body["invoices"][0]["is_void"] is True
     assert Decimal(body["balance"]) == Decimal("0.00")
+
+
+# --------------------------------------------------------------------------
+# What the dashboard reads
+# --------------------------------------------------------------------------
+async def test_the_arrears_tile_separates_the_long_overdue(
+    client, setup, bursar
+) -> None:
+    """"61 students, 9 over 60 days" is two different problems. A school whose
+    arrears are all under a month has a timing problem; one with a tail past
+    sixty days has a collection problem, and the tile has to tell them apart.
+
+    Both bills fall due on 2027-01-22. Read on 10 February they are nineteen
+    days late; read on 1 June they are past sixty.
+    """
+    await invoice_for(client, bursar, setup)
+
+    recent = await client.get(
+        "/api/v1/fees/collection", params={"as_of": "2027-02-10"}, headers=bursar
+    )
+    stale = await client.get(
+        "/api/v1/fees/collection", params={"as_of": "2027-06-01"}, headers=bursar
+    )
+
+    assert recent.json()["students_in_arrears"] == 2
+    assert recent.json()["students_over_60_days"] == 0
+    assert stale.json()["students_in_arrears"] == 2
+    assert stale.json()["students_over_60_days"] == 2
+
+
+async def test_the_tiles_and_the_list_beneath_them_read_the_same_day(
+    client, setup, bursar
+) -> None:
+    """Two different arrears figures on one screen is how a bursar stops
+    believing either of them."""
+    await invoice_for(client, bursar, setup)
+
+    tiles = await client.get(
+        "/api/v1/fees/collection", params={"as_of": "2027-02-10"}, headers=bursar
+    )
+    listed = await client.get(
+        "/api/v1/fees/arrears", params={"as_of": "2027-02-10"}, headers=bursar
+    )
+
+    assert tiles.json()["students_in_arrears"] == listed.json()["total"]
+
+
+async def test_nothing_overdue_before_the_due_date(client, setup, bursar) -> None:
+    await invoice_for(client, bursar, setup)
+
+    body = (
+        await client.get(
+            "/api/v1/fees/collection", params={"as_of": "2027-01-10"}, headers=bursar
+        )
+    ).json()
+
+    assert body["students_in_arrears"] == 0
+    assert body["students_over_60_days"] == 0
+    assert Decimal(body["overdue"]) == Decimal("0.00")
+
+
+async def test_the_payments_feed_names_the_child_not_the_invoice(
+    client, setup, bursar
+) -> None:
+    """A bursar recognises "Child0 Mwanjala, Standard 4 Blue" and recognises
+    nothing at all about INV/Term1/0001."""
+    invoice_id = await invoice_for(client, bursar, setup)
+    await client.post(
+        f"/api/v1/payments/invoices/{invoice_id}/payments",
+        json={"amount": "120000", "receipt": "RCPT-FEED", "channel": "mpesa"},
+        headers=bursar,
+    )
+
+    feed = await client.get("/api/v1/payments/recent", headers=bursar)
+
+    row = feed.json()[0]
+    assert row["student_name"].startswith("Child0")
+    assert row["class_name"] == "Standard 4 Blue"
+    assert Decimal(row["amount"]) == Decimal("120000.00")
+    assert row["channel"] == "mpesa"
+
+
+async def test_the_feed_is_newest_first(client, setup, bursar) -> None:
+    invoice_id = await invoice_for(client, bursar, setup)
+    for index, amount in enumerate(("10000", "20000", "30000")):
+        await client.post(
+            f"/api/v1/payments/invoices/{invoice_id}/payments",
+            json={"amount": amount, "receipt": f"RCPT-{index}"},
+            headers=bursar,
+        )
+
+    feed = await client.get("/api/v1/payments/recent", headers=bursar)
+
+    assert [Decimal(row["amount"]) for row in feed.json()] == [
+        Decimal("30000.00"),
+        Decimal("20000.00"),
+        Decimal("10000.00"),
+    ]
+
+
+async def test_the_feed_is_behind_payment_read(client, setup) -> None:
+    """A teacher who can see one child's balance has no business reading the
+    school's takings."""
+    teacher = await token(client, email=setup["teacher_email"], subdomain=setup["subdomain"])
+
+    response = await client.get("/api/v1/payments/recent", headers=teacher)
+
+    assert response.status_code == 403
