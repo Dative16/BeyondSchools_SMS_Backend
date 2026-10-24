@@ -65,9 +65,19 @@ webhook, and `external_ref` is still unique per school, so the idempotency
 guarantee is already in place for the day an aggregator is chosen.
 
 **3. The level ladder is data, not code.** Tanzania is mid-reform: two primary
-cohorts sit the PSLE in 2027. `level.order_index` and a per-cohort
-`exit_level_id` on the academic year decide what comes next, and a promotion run
-is reviewable and reversible.
+cohorts sit the PSLE in 2027. What comes next is decided by
+`level.order_index`, an optional explicit `next_level_id` override, and the rows
+in `academic_year_exit_level` — one per cohort leaving that year, so a year can
+hold two. `app/domain/academic_year.py` answers it, and an exit level beats the
+ladder: Standard 6 has a perfectly good next rung in 2027 and must still
+graduate.
+
+`GET /api/v1/academic/ladder` returns the ladder, the exit cohorts, and
+everything wrong with both — a duplicate order index, an override pointing
+downwards, a top cohort with nowhere to go. The problems travel with the data
+rather than behind a second call, because the difference between "correctly
+configured for the transition" and "somebody forgot a cohort" is what a head of
+academics needs to see in September, not December.
 
 ## Signing in
 

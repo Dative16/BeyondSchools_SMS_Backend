@@ -33,10 +33,12 @@ from app.db.session import get_session
 from app.domain.roles import Permission, Principal, can
 from app.integrations.sms.base import SmsSender
 from app.integrations.sms.provider import get_sms_sender
+from app.repositories.academic import SqlAcademicRepository
 from app.repositories.audit import SqlAuditRepository
 from app.repositories.base import SqlAlchemyUnitOfWork
 from app.repositories.schools import PublicSchool, SqlSchoolRepository
 from app.repositories.users import SqlUserRepository
+from app.services.academic import AcademicService
 from app.services.auth import AuthService, RequestContext
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -267,3 +269,16 @@ async def tenant_auth_service(
 
 
 TenantAuthServiceDep = Annotated[AuthService, Depends(tenant_auth_service)]
+
+
+async def academic_service(session: TenantSessionDep) -> AcademicService:
+    """Academic structure, on a session bound from the token's school."""
+    return AcademicService(
+        uow=SqlAlchemyUnitOfWork(session),
+        academic=SqlAcademicRepository(session),
+        schools=SqlSchoolRepository(session),
+        audit=SqlAuditRepository(session),
+    )
+
+
+AcademicServiceDep = Annotated[AcademicService, Depends(academic_service)]

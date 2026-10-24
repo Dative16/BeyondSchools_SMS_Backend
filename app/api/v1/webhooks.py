@@ -41,7 +41,7 @@ async def payment_callback(
     try:
         result = await service.record_callback(school_id, event)
     except PaymentRejected as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, exc.reason) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.reason) from exc
 
     # 200 even for a duplicate: the aggregator will keep retrying anything else,
     # and the duplicate was already handled the first time it arrived.

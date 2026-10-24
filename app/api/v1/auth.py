@@ -288,7 +288,7 @@ async def change_password(
     except InvalidCredentials as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, exc.reason) from exc
     except AuthError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, exc.reason) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.reason) from exc
 
     response.delete_cookie(REFRESH_COOKIE, path=REFRESH_COOKIE_PATH)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
