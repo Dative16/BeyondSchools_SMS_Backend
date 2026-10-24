@@ -8,7 +8,9 @@ from app.api.v1 import (
     apply,
     auth,
     enrolments,
+    fees,
     guardians,
+    payments,
     schools,
     students,
 )
@@ -25,7 +27,8 @@ api_router.include_router(guardians.router, prefix="/guardians", tags=["guardian
 # only part of this API a stranger can reach.
 api_router.include_router(apply.router, prefix="/apply", tags=["apply"])
 api_router.include_router(admissions.router, prefix="/admissions", tags=["admissions"])
+api_router.include_router(fees.router, prefix="/fees", tags=["fees"])
+api_router.include_router(payments.router, prefix="/payments", tags=["payments"])
 
 # Each lands with its phase:
-#   1.6  fees, payments, webhooks
 #   2    timetable, assignments, promotion, reports

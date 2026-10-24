@@ -161,6 +161,72 @@ Two behaviours worth knowing:
   existing roll has to move that counter past its highest existing number —
   `scripts/seed_demo.py` does exactly this, and shows what an import must do.
 
+## Fees
+
+Four ideas, and all four exist to stop one thing: a number on a bill that
+nobody can explain.
+
+**Nothing writes a balance.** `invoice.billed` and `invoice.settled` are
+derived by database triggers from the lines and the payments. There is no
+endpoint that sets them, and a guard trigger discards a direct assignment, so a
+bug in a service cannot mark an invoice paid with money missing. A correction is
+a credit note or a payment — never an edit.
+
+**A published structure is frozen.** A draft can be changed; once published,
+the items are fixed and next year gets its own structure. A parent who
+photographed a bill must find the same figure on it three weeks later. An empty
+structure cannot be published either, because a term run against one would bill
+every child nothing and look as though it worked.
+
+**The term run previews and repeats.** `dry_run` is true unless asked
+otherwise, and the preview names every child it could not bill — almost always
+a level whose structure is still a draft. A child who already has an invoice for
+the term is skipped, so a run over 500 children that is interrupted by a
+timeout, a restart or a closed laptop is recovered by running it again.
+
+```
+POST /api/v1/fees/terms/{id}/run   { "dry_run": true }   -> raised, skipped, problems
+POST /api/v1/fees/terms/{id}/run   { "dry_run": false }  -> the invoices
+```
+
+**Discounts and arrears are their own lines.** A bursary is not a reduced
+charge: a parent sees 240,000 tuition and 120,000 off, which is the difference
+between a bill they trust and one they ring up about. Arrears carried from last
+year land on the first term's bill as a line of their own, or the invoice reads
+as a price rise.
+
+Two more things that are easy to get wrong and are tested:
+
+- **Ageing is read against a day you pass in.** `as_of` on the invoice,
+  arrears and statement reads defaults to today, so a month-end report produced
+  in May for April is read against April. A stored status is how an invoice ends
+  up marked paid in the wrong month.
+- **Arrears are one row per child**, not per invoice: a bursar chasing arrears
+  rings a family, and three overdue bills for one child is one phone call.
+
+### Money, while it is still manual
+
+Phase 1 has no aggregator. A bursar holds an M-Pesa confirmation or a bank slip
+and types its receipt, which is the school's actual process. Two things make
+that safe enough to be the only path: the entry names its author, and the
+receipt is unique per school, so entering the same one twice is caught rather
+than doubling a credit.
+
+```
+POST /api/v1/payments/invoices/{id}/payments   a named, audited entry
+GET  /api/v1/payments/suspense                 money nobody could place
+POST /api/v1/payments/{id}/match               a bursar's decision about it
+```
+
+Suspense is the dashboard's first "needs your attention" row. Nothing picks
+between two siblings with open balances — the wrong guess takes an afternoon to
+unpick and a parent's phone call to discover.
+
+Voiding is refused once money is against an invoice: a payment attached to a
+bill that officially does not exist is worse than the mistake it was meant to
+fix. Write a credit note. A voided invoice stays visible, with its reason, and
+counts for nothing.
+
 ## Documents
 
 The bytes never pass through this API. A client asks for an upload URL, PUTs

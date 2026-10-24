@@ -250,3 +250,211 @@ def total_outstanding(invoices: list[InvoiceFacts]) -> Decimal:
     return shillings(
         sum((balance_of(i) for i in invoices if not i.is_void), ZERO)
     )
+
+
+# --------------------------------------------------------------------------
+# Standing discounts
+# --------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class Discount:
+    """A standing reduction for one child: staff child, sibling, bursary.
+
+    Held against the student rather than written into each invoice, so next
+    term's run applies it without anybody remembering to — and so a bursary
+    can be ended on a date instead of unpicked from six bills.
+    """
+
+    label: str
+    amount: Decimal | None = None
+    percent: int | None = None
+    #: Narrow it to one category, for "free tuition, pays transport".
+    category: FeeCategory | None = None
+    starts_on: date | None = None
+    ends_on: date | None = None
+
+    def applies_on(self, day: date) -> bool:
+        if self.starts_on is not None and day < self.starts_on:
+            return False
+        return not (self.ends_on is not None and day > self.ends_on)
+
+
+def apply_discounts(
+    lines: list[DraftLine],
+    discounts: list[Discount],
+    *,
+    as_of: date,
+    categories: dict[UUID, FeeCategory] | None = None,
+) -> list[DraftLine]:
+    """Add a discount line for each reduction that applies.
+
+    Discount *lines* rather than reduced charges, for two reasons. A parent
+    looking at a bill can see what they were charged and what they were let
+    off, which is the difference between a bill they trust and one they ring
+    up about. And the full charge stays on the invoice, so a school can still
+    answer what a place actually costs.
+
+    A percentage is taken against the charges it is scoped to, not the whole
+    invoice: "half off tuition" must not quietly discount the bus.
+    """
+    if not discounts:
+        return lines
+
+    categories = categories or {}
+    charges = [line for line in lines if line.kind is InvoiceLineKind.CHARGE]
+    out = list(lines)
+
+    for discount in discounts:
+        if not discount.applies_on(as_of):
+            continue
+
+        scoped = (
+            charges
+            if discount.category is None
+            else [
+                line
+                for line in charges
+                if line.fee_item_id is not None
+                and categories.get(line.fee_item_id) is discount.category
+            ]
+        )
+        base = sum((line.amount for line in scoped), ZERO)
+        if base <= ZERO:
+            continue
+
+        if discount.amount is not None:
+            # Never more than what is being charged: a 200,000 bursary against
+            # a 150,000 bill is a 150,000 discount, not a credit.
+            reduction = min(shillings(discount.amount), base)
+        elif discount.percent is not None:
+            reduction = shillings(base * Decimal(discount.percent) / Decimal(100))
+        else:
+            continue
+
+        if reduction > ZERO:
+            out.append(
+                DraftLine(
+                    item=discount.label,
+                    amount=reduction,
+                    kind=InvoiceLineKind.DISCOUNT,
+                )
+            )
+
+    return out
+
+
+def arrears_line(amount: Decimal) -> DraftLine:
+    """Last term's unpaid balance, carried onto this term's bill.
+
+    Its own line rather than folded into the total: a parent has to be able to
+    see that they are being asked for two terms, or the new invoice looks like
+    a price rise.
+    """
+    return DraftLine(
+        item="Arrears brought forward",
+        amount=shillings(amount),
+        kind=InvoiceLineKind.ARREARS_BROUGHT_FORWARD,
+    )
+
+
+# --------------------------------------------------------------------------
+# A term's invoice run
+# --------------------------------------------------------------------------
+class RunOutcome(StrEnum):
+    WOULD_RAISE = "would_raise"
+    RAISED = "raised"
+    #: Already has an invoice for this term. The run is safe to repeat, which
+    #: matters because sooner or later one will be interrupted halfway.
+    ALREADY_INVOICED = "already_invoiced"
+    #: No published fee structure for this child's level and year.
+    NO_STRUCTURE = "no_structure"
+    #: Nothing to bill: every item was zero or out of scope for this term.
+    NOTHING_DUE = "nothing_due"
+
+
+@dataclass(frozen=True, slots=True)
+class RunDecision:
+    enrolment_id: UUID
+    student_id: UUID
+    outcome: RunOutcome
+    billed: Decimal
+    reason: str
+
+    @property
+    def is_problem(self) -> bool:
+        return self.outcome is RunOutcome.NO_STRUCTURE
+
+
+def decide_run(
+    *,
+    enrolment_id: UUID,
+    student_id: UUID,
+    already_invoiced: bool,
+    has_published_structure: bool,
+    billed: Decimal,
+    dry_run: bool,
+) -> RunDecision:
+    """What a term's invoice run should do about one child.
+
+    Pure, so a whole run can be previewed before anything is written — which is
+    how a bursar finds out that Standard 6's structure is still a draft
+    *before* 38 invoices go out rather than after.
+
+    Idempotent by design: a child who already has an invoice for the term is
+    skipped rather than billed twice. A run over 500 children will be
+    interrupted eventually, and the only safe recovery is to run it again.
+    """
+    if already_invoiced:
+        return RunDecision(
+            enrolment_id,
+            student_id,
+            RunOutcome.ALREADY_INVOICED,
+            ZERO,
+            "already has an invoice for this term",
+        )
+    if not has_published_structure:
+        return RunDecision(
+            enrolment_id,
+            student_id,
+            RunOutcome.NO_STRUCTURE,
+            ZERO,
+            "no published fee structure for this level and year",
+        )
+    if billed <= ZERO:
+        return RunDecision(
+            enrolment_id, student_id, RunOutcome.NOTHING_DUE, ZERO, "nothing to bill"
+        )
+
+    return RunDecision(
+        enrolment_id,
+        student_id,
+        RunOutcome.WOULD_RAISE if dry_run else RunOutcome.RAISED,
+        billed,
+        "ok",
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class RunSummary:
+    """What a run did, or would do."""
+
+    decisions: tuple[RunDecision, ...]
+
+    @property
+    def raised(self) -> int:
+        return sum(
+            1
+            for d in self.decisions
+            if d.outcome in (RunOutcome.RAISED, RunOutcome.WOULD_RAISE)
+        )
+
+    @property
+    def skipped(self) -> int:
+        return sum(1 for d in self.decisions if d.outcome is RunOutcome.ALREADY_INVOICED)
+
+    @property
+    def total_billed(self) -> Decimal:
+        return shillings(sum((d.billed for d in self.decisions), ZERO))
+
+    @property
+    def problems(self) -> tuple[RunDecision, ...]:
+        return tuple(d for d in self.decisions if d.is_problem)

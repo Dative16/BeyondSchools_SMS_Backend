@@ -1,48 +1,15 @@
-"""Payment callbacks.
+"""Aggregator payment callbacks. Lands with the phase that adds an aggregator.
 
-The whole file is the shape every endpoint should have: verify, delegate,
-translate the answer into HTTP. There is no rule in here you could get wrong,
-because there is no rule in here.
+Deliberately empty for now. Phase 1 settles fees through the audited manual
+entry in `app/api/v1/payments.py`, which is the school's actual process: a
+bursar holds an M-Pesa confirmation or a bank slip and types its receipt.
+
+What was here was a route sketch, and it is better gone than half-wired. A
+public endpoint that records money needs a provider that can sign a callback,
+and `app/integrations/payments/mock.py` is still a placeholder — so the
+endpoint would have had to either trust an unsigned POST or reject every
+request. The service it would call is written and tested already
+(`app/services/payments.py`, `app/domain/payments.decide`), so what remains for
+that phase is a provider adapter, a school lookup that works without a
+subdomain header, and this route.
 """
-
-from typing import Annotated
-
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-
-from app.api.deps import payment_service, resolve_school_from_webhook
-from app.integrations.payments.base import PaymentProvider
-from app.schemas.payment import CallbackAck
-from app.services.payments import PaymentRejected, PaymentService
-
-router = APIRouter()
-
-
-@router.post(
-    "/payments/{provider_name}",
-    response_model=CallbackAck,
-    status_code=status.HTTP_200_OK,
-    summary="Aggregator payment callback",
-)
-async def payment_callback(
-    provider_name: str,
-    request: Request,
-    provider: Annotated[PaymentProvider, Depends()],
-    service: Annotated[PaymentService, Depends(payment_service)],
-    school_id: Annotated[str, Depends(resolve_school_from_webhook)],
-    x_signature: Annotated[str | None, Header()] = None,
-) -> CallbackAck:
-    body = await request.body()
-
-    try:
-        event = provider.verify_callback(dict(request.headers), body)
-    except ValueError as exc:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Bad signature") from exc
-
-    try:
-        result = await service.record_callback(school_id, event)
-    except PaymentRejected as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.reason) from exc
-
-    # 200 even for a duplicate: the aggregator will keep retrying anything else,
-    # and the duplicate was already handled the first time it arrived.
-    return CallbackAck(accepted=True, disposition=result.disposition)
