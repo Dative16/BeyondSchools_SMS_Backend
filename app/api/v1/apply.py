@@ -74,6 +74,8 @@ def _as_state(view: ApplicationView) -> ApplyStateResponse:
         ],
         complete=view.checklist.complete,
         missing=[item.label for item in view.checklist.missing],
+        can_submit=not view.missing_to_submit,
+        missing_to_submit=list(view.missing_to_submit),
         deposit_billed=view.deposit_billed,
         deposit_settled=view.deposit_settled,
     )

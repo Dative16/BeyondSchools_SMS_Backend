@@ -12,6 +12,10 @@ class Settings(BaseSettings):
 
     ENVIRONMENT: Literal["local", "staging", "production"] = "local"
     DEBUG: bool = False
+    #: Below INFO the mock SMS sender's one-time code is invisible, and the
+    #: applicant flow cannot be exercised locally at all — the code is hashed
+    #: before it is stored, so the log is the only place it exists.
+    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     SECRET_KEY: str
     API_V1_PREFIX: str = "/api/v1"
     ALLOWED_ORIGINS: str = ""

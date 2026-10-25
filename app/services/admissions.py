@@ -102,6 +102,31 @@ class ApplicationView:
     duplicates: list[DuplicateMatch]
     deposit_billed: Decimal | None
     deposit_settled: Decimal | None
+    #: What the server would refuse a submission for — a different question
+    #: from the checklist above. The checklist is what the school would like
+    #: to have; this is the shortest list it cannot do without. Conflating
+    #: them puts a birth certificate between a parent and a submission the
+    #: server would have accepted.
+    missing_to_submit: tuple[str, ...] = ()
+
+
+def _draft_of(application: Any) -> ApplicationDraft:
+    """The subset of an application the submission rules read.
+
+    One place, because the check runs twice: once so the form can disable its
+    own button, and once on the way in, where it is the one that counts.
+    """
+    return ApplicationDraft(
+        phone_verified=application.phone_verified_at is not None,
+        child_first_name=application.child_first_name,
+        child_surname=application.child_surname,
+        date_of_birth=application.date_of_birth,
+        sex=application.sex,
+        level_applied_id=application.level_applied_id,
+        guardian_name=application.guardian_name,
+        guardian_phone=application.guardian_phone,
+        guardian_relationship=application.guardian_relationship,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,18 +279,7 @@ class AdmissionsService:
         async with self._uow:
             application = await self._own_application(principal)
 
-            draft = ApplicationDraft(
-                phone_verified=application.phone_verified_at is not None,
-                child_first_name=application.child_first_name,
-                child_surname=application.child_surname,
-                date_of_birth=application.date_of_birth,
-                sex=application.sex,
-                level_applied_id=application.level_applied_id,
-                guardian_name=application.guardian_name,
-                guardian_phone=application.guardian_phone,
-                guardian_relationship=application.guardian_relationship,
-            )
-            missing = missing_to_submit(draft)
+            missing = missing_to_submit(_draft_of(application))
             if missing:
                 raise Invalid(f"still needed: {', '.join(missing)}")
 
@@ -928,6 +942,7 @@ class AdmissionsService:
             level_name = await self._admissions.level_name(application.level_applied_id)
 
         return ApplicationView(
+            missing_to_submit=missing_to_submit(_draft_of(application)),
             application=application,
             level_name=level_name,
             documents=documents,

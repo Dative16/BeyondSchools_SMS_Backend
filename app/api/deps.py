@@ -255,6 +255,7 @@ async def auth_service(
         users=SqlUserRepository(session),
         audit=SqlAuditRepository(session),
         sms=sms,
+        admissions=SqlAdmissionsRepository(session),
     )
 
 
@@ -278,6 +279,7 @@ async def tenant_auth_service(
         users=SqlUserRepository(session),
         audit=SqlAuditRepository(session),
         sms=sms,
+        admissions=SqlAdmissionsRepository(session),
     )
 
 

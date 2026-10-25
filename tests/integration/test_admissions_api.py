@@ -757,3 +757,129 @@ async def test_a_stranger_cannot_ask_for_an_upload_url(client, setup) -> None:
     )
 
     assert response.status_code in (401, 403)
+
+
+async def test_what_a_parent_types_comes_back_when_they_return(
+    client, setup, fixed_code
+) -> None:
+    """Three fields were write-only: the save request took them and the state
+    response never sent them back. A parent who filled them in and came back
+    the next day found the boxes empty, and either typed them again or decided
+    the form had not saved."""
+    parent = await applicant(client, setup, fixed_code, phone="0754118954")
+
+    await client.patch(
+        "/api/v1/apply/me",
+        json={
+            "guardian_name": "Neema Mollel",
+            "guardian_national_id": "19850101-12345-00001-23",
+            "guardian_address": "Mwenge, Kinondoni",
+            "birth_certificate_no": "BC/2020/88213",
+        },
+        headers=parent,
+    )
+
+    # A fresh read, as a return visit would do.
+    returned = await client.get("/api/v1/apply/me", headers=parent)
+
+    application = returned.json()["application"]
+    assert application["guardian_national_id"] == "19850101-12345-00001-23"
+    assert application["guardian_address"] == "Mwenge, Kinondoni"
+    assert application["birth_certificate_no"] == "BC/2020/88213"
+
+
+async def test_a_storage_key_is_never_sent_to_the_form(
+    client, setup, fixed_code
+) -> None:
+    """The document rows were untyped dicts and carried `file_url`, which is a
+    storage key rather than anything openable. A public page reached by a
+    stranger is not where an object key belongs."""
+    parent = await applicant(client, setup, fixed_code, phone="0754118955")
+    ticket = await client.post(
+        "/api/v1/apply/me/documents/upload-url",
+        json={"kind": "birth_certificate", "content_type": "image/png"},
+        headers=parent,
+    )
+    body = ticket.json()
+    await client.put(body["url"], content=PNG, headers=body["headers"])
+    confirmed = await client.post(
+        "/api/v1/apply/me/documents",
+        json={"kind": "birth_certificate", "object_key": body["object_key"]},
+        headers=parent,
+    )
+
+    document = confirmed.json()["documents"][0]
+    assert "file_url" not in document
+    assert document["kind"] == "birth_certificate"
+    assert document["content_type"] == "image/png"
+
+
+async def test_a_parent_who_closes_the_browser_comes_back_to_the_same_form(
+    client, setup, fixed_code
+) -> None:
+    """The refresh cookie is the whole point of the form surviving a flat
+    battery. Rotating it returned a token with the applicant role and no
+    application, so every route on the public form answered 403 — a parent
+    could not get back to their own half-filled form without a new code."""
+    parent = await applicant(client, setup, fixed_code, phone="0754118960")
+    await client.patch(
+        "/api/v1/apply/me", json={"child_first_name": "Happiness"}, headers=parent
+    )
+
+    # The access token dies with the tab; only the cookie survives.
+    refreshed = await client.post(
+        "/api/v1/auth/refresh", headers=headers(setup["subdomain"])
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["principal"]["role"] == "applicant"
+
+    resumed = await client.get(
+        "/api/v1/apply/me",
+        headers={
+            "Authorization": f"Bearer {refreshed.json()['access_token']}",
+            **headers(setup["subdomain"]),
+        },
+    )
+
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["application"]["child_first_name"] == "Happiness"
+
+
+async def test_a_form_says_separately_what_it_needs_and_what_the_school_wants(
+    client, setup, fixed_code
+) -> None:
+    """Two different lists. `missing` is the school's checklist — a birth
+    certificate, a photograph — and `missing_to_submit` is the shortest list
+    the server will not accept a form without. A form that disabled its send
+    button on the first one would put a document between a parent and a
+    submission the server would have taken."""
+    parent = await applicant(client, setup, fixed_code, phone="0754118961")
+
+    empty = (await client.get("/api/v1/apply/me", headers=parent)).json()
+    assert empty["can_submit"] is False
+    assert "child_first_name" in empty["missing_to_submit"]
+
+    filled = await client.patch(
+        "/api/v1/apply/me",
+        json={
+            "child_first_name": "Happiness",
+            "child_surname": "Mollel",
+            "date_of_birth": "2020-11-30",
+            "sex": "f",
+            "level_applied_id": str(setup["level_id"]),
+            "guardian_name": "Neema Mollel",
+            "guardian_phone": "0754118961",
+            "guardian_relationship": "mother",
+        },
+        headers=parent,
+    )
+
+    state = filled.json()
+    assert state["can_submit"] is True
+    assert state["missing_to_submit"] == []
+    # The checklist is still incomplete, and that is fine.
+    assert state["complete"] is False
+    assert state["missing"], "the school still wants documents"
+
+    sent = await client.post("/api/v1/apply/me/submit", headers=parent)
+    assert sent.status_code == 200, sent.text

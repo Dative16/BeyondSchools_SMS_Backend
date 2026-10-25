@@ -45,6 +45,7 @@ from app.domain.roles import Principal, Role
 from app.integrations.sms.base import SmsMessage, SmsSender
 from app.models.audit import AuditOutcome
 from app.models.user import AppUser
+from app.repositories.admissions import AdmissionsRepository
 from app.repositories.audit import AuditRepository
 from app.repositories.base import UnitOfWork
 from app.repositories.users import UserRepository
@@ -126,11 +127,13 @@ class AuthService:
         users: UserRepository,
         audit: AuditRepository,
         sms: SmsSender,
+        admissions: AdmissionsRepository,
     ) -> None:
         self._uow = uow
         self._users = users
         self._audit = audit
         self._sms = sms
+        self._admissions = admissions
 
     # ----------------------------------------------------------------------
     # Passwords
@@ -683,12 +686,25 @@ class AuthService:
         # carry them, so resolving them here would be a query at every sign-in
         # whose answer goes nowhere. The students service fills the scope in
         # per request, where it is used.
+
+        # An applicant's scope is not on the user row, it is the open
+        # application for their phone — so it has to be looked up again here.
+        # Without this, rotating the refresh cookie returned a token with the
+        # applicant role and no application, and every route on the public
+        # form answered 403: a parent who closed the browser could not get
+        # back to their own half-filled form.
+        application_id = None
+        if user.role is Role.APPLICANT and user.phone:
+            open_application = await self._admissions.by_phone(user.phone, open_only=True)
+            application_id = open_application.id if open_application else None
+
         return Principal(
             user_id=user.id,
             school_id=user.school_id,
             role=user.role,
             student_id=user.student_id,
             guardian_id=user.guardian_id,
+            application_id=application_id,
         )
 
     async def _open_session(

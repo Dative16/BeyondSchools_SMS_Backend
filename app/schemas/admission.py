@@ -143,6 +143,13 @@ class ApplicationResponse(BaseModel):
     guardian_phone: str | None
     guardian_email: str | None
     guardian_relationship: Relationship | None
+    #: Write-only until now: `ApplySaveRequest` took all three and nothing
+    #: ever sent them back, so a parent who filled them in and returned the
+    #: next day found the boxes empty and typed them again — or decided the
+    #: form had not saved.
+    guardian_national_id: str | None = None
+    guardian_address: str | None = None
+    birth_certificate_no: str | None = None
 
     admission_no: str | None
     offer_expires_on: date | None
@@ -154,16 +161,40 @@ class ApplicationResponse(BaseModel):
     decline_reason: str | None
 
 
+class ApplyDocument(BaseModel):
+    """One file a parent has attached.
+
+    `file_url` is the storage key and is deliberately absent: it is not a URL
+    anybody can open, and sending it would put an object key in a page a
+    stranger reaches.
+    """
+
+    id: UUID
+    kind: str
+    file_name: str | None
+    content_type: str | None
+    size_bytes: int | None
+    verified_at: datetime | None
+    created_at: datetime
+
+
 class ApplyStateResponse(BaseModel):
     """What the form shows a parent: where they are, and what is left."""
 
     application: ApplicationResponse
     level_name: str | None
-    documents: list[dict[str, Any]]
+    documents: list[ApplyDocument]
     field_values: dict[str, Any]
+    #: What the school would like to have: documents, extra fields.
     checklist: list[ApplyChecklistItem]
     complete: bool
     missing: list[str]
+    #: What the server will refuse a submission without — a different and much
+    #: shorter list. A form that disables its send button on `missing` puts a
+    #: birth certificate between a parent and a submission the server would
+    #: have accepted.
+    can_submit: bool = False
+    missing_to_submit: list[str] = []
     deposit_billed: Decimal | None
     deposit_settled: Decimal | None
 
