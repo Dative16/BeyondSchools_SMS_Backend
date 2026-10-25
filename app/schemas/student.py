@@ -7,9 +7,13 @@ from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.domain.enrolment import EnrolmentOutcome, StudentStatus
+from app.domain.enrolment import (
+    EnrolmentOutcome,
+    StudentStatus,
+    date_of_birth_problem,
+)
 from app.domain.registration import Residency
 
 
@@ -47,6 +51,21 @@ class RollRowResponse(BaseModel):
     on_ai_platform: bool
 
 
+def _checked_birth(value: date | None) -> date | None:
+    """A date of birth that could not be right, refused on the way in.
+
+    A child born in 2099 is a slip at a keyboard, and it reaches every report,
+    class list and age-banded fee the school ever produces. The rule itself
+    lives in the domain; this is where it is enforced.
+    """
+    if value is None:
+        return None
+    problem = date_of_birth_problem(value, today=date.today())
+    if problem:
+        raise ValueError(problem)
+    return value
+
+
 class StudentCreateRequest(BaseModel):
     """Admit a child by hand.
 
@@ -71,6 +90,13 @@ class StudentCreateRequest(BaseModel):
     #: Which year's sequence the admission number comes from.
     admission_year: int | None = Field(default=None, ge=2000, le=2100)
 
+    @field_validator("date_of_birth")
+    @classmethod
+    def _plausible_birth(cls, value: date) -> date:
+        checked = _checked_birth(value)
+        assert checked is not None  # noqa: S101 - the input was not optional
+        return checked
+
 
 class StudentUpdateRequest(BaseModel):
     first_name: str | None = Field(default=None, min_length=1, max_length=64)
@@ -84,6 +110,11 @@ class StudentUpdateRequest(BaseModel):
     special_needs: str | None = None
     photo_url: str | None = None
     status: StudentStatus | None = None
+
+    @field_validator("date_of_birth")
+    @classmethod
+    def _plausible_birth(cls, value: date | None) -> date | None:
+        return _checked_birth(value)
 
 
 class StudentResponse(BaseModel):

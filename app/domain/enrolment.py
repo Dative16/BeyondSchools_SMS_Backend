@@ -96,6 +96,30 @@ def class_group_name(level_name: str, stream_name: str | None) -> str:
     return f"{level_name} {stream_name}" if stream_name else level_name
 
 
+#: Nobody at a primary or secondary school was born before this. It is a
+#: guard against a typed year, not a judgement about who may enrol: 1920
+#: leaves room for an adult learner and still catches 1066 and 2099.
+EARLIEST_PLAUSIBLE_BIRTH_YEAR = 1920
+
+
+def date_of_birth_problem(value: date, *, today: date) -> str | None:
+    """Why this date of birth cannot be right, or None.
+
+    Two mistakes, and both are a slip at a keyboard rather than a lie. A date
+    in the future is unambiguous. A year before 1920 is almost always a
+    transposed digit — and either one quietly produces a child whose age is
+    wrong on every report, every class list and every age-banded fee.
+    """
+    if value > today:
+        return "a date of birth cannot be in the future"
+    if value.year < EARLIEST_PLAUSIBLE_BIRTH_YEAR:
+        return (
+            f"a date of birth before {EARLIEST_PLAUSIBLE_BIRTH_YEAR} is almost "
+            "certainly a typing mistake"
+        )
+    return None
+
+
 def age_on(date_of_birth: date, as_of: date) -> int:
     """Age in whole years.
 

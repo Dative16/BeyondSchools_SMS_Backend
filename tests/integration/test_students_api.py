@@ -1024,3 +1024,35 @@ async def test_a_child_with_no_invoice_at_all_is_not_settled(
     )
 
     assert "Unbilled" not in {row["first_name"] for row in settled.json()["items"]}
+
+
+async def test_a_date_of_birth_in_the_future_is_refused(client, setup, admin) -> None:
+    """It was accepted. A child born in 2099 came out as age 0 on every screen
+    that showed one, and the field is not one anybody looks at twice."""
+    student_id = await admit(client, admin)
+
+    response = await client.patch(
+        f"/api/v1/students/{student_id}",
+        json={"date_of_birth": "2099-01-01"},
+        headers=admin,
+    )
+
+    assert response.status_code == 422
+    assert "future" in response.text
+
+
+async def test_a_child_cannot_be_admitted_with_an_impossible_birth_date(
+    client, setup, admin
+) -> None:
+    response = await client.post(
+        "/api/v1/students",
+        json={
+            "first_name": "Neema",
+            "surname": "Mwanjala",
+            "date_of_birth": "1066-10-14",
+            "sex": "f",
+        },
+        headers=admin,
+    )
+
+    assert response.status_code == 422
