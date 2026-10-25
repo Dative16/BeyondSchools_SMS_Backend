@@ -348,6 +348,7 @@ def _admissions(session: AsyncSession) -> AdmissionsService:
         invoicing=_invoicing(session),
         users=SqlUserRepository(session),
         audit=SqlAuditRepository(session),
+        storage=get_object_store(),
     )
 
 

@@ -648,3 +648,112 @@ async def test_the_funnel_counts_every_step(client, setup, fixed_code) -> None:
     assert funnel.status_code == 200
     assert funnel.json()["submitted"] == 1
     assert funnel.json()["enrolled"] == 0
+
+
+# --------------------------------------------------------------------------
+# Documents, while the form is still open
+# --------------------------------------------------------------------------
+PNG = bytes(
+    [
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+        0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00,
+        0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x60, 0x00, 0x00, 0x00,
+        0x02, 0x00, 0x01, 0xFF, 0xFF, 0x03, 0x00, 0x00, 0x06, 0x00, 0x05, 0x57,
+        0xBF, 0xAB, 0xD4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+        0x42, 0x60, 0x82,
+    ]
+)
+
+
+async def test_a_parent_can_attach_a_birth_certificate_from_the_form(
+    client, setup, fixed_code
+) -> None:
+    """The best moment to get one is while a parent is sitting with the form
+    open and the certificate in their hand. Every week after that is a phone
+    call."""
+    parent = await applicant(client, setup, fixed_code, phone="0754118951")
+
+    ticket = await client.post(
+        "/api/v1/apply/me/documents/upload-url",
+        json={
+            "kind": "birth_certificate",
+            "content_type": "image/png",
+            "size_bytes": len(PNG),
+        },
+        headers=parent,
+    )
+    assert ticket.status_code == 200, ticket.text
+    body = ticket.json()
+    assert "/application/" in body["object_key"], "stored under the application, not a pupil"
+
+    # The parent's phone PUTs the bytes itself; this stands in for the phone.
+    put = await client.put(body["url"], content=PNG, headers=body["headers"])
+    assert put.status_code == 200, put.text
+
+    confirmed = await client.post(
+        "/api/v1/apply/me/documents",
+        json={
+            "kind": "birth_certificate",
+            "object_key": body["object_key"],
+            "file_name": "cheti.png",
+        },
+        headers=parent,
+    )
+
+    assert confirmed.status_code == 201, confirmed.text
+    kinds = {row["kind"] for row in confirmed.json()["documents"]}
+    assert "birth_certificate" in kinds
+
+
+async def test_a_file_type_a_school_cannot_use_is_refused_before_it_is_sent(
+    client, setup, fixed_code
+) -> None:
+    """Refused up front, so a parent on a weak connection has not already sent
+    four megabytes of something nobody can open."""
+    parent = await applicant(client, setup, fixed_code, phone="0754118952")
+
+    response = await client.post(
+        "/api/v1/apply/me/documents/upload-url",
+        json={"kind": "birth_certificate", "content_type": "application/zip"},
+        headers=parent,
+    )
+
+    assert response.status_code == 422
+    assert "not a kind of file" in response.text
+
+
+async def test_confirming_an_upload_that_never_arrived_is_refused(
+    client, setup, fixed_code
+) -> None:
+    """A presigned PUT cannot enforce anything, so the confirm step asks
+    storage what actually landed. Without it a record would exist for a file
+    that is not there — which on a 3G connection is a real fraction of them."""
+    parent = await applicant(client, setup, fixed_code, phone="0754118953")
+
+    ticket = await client.post(
+        "/api/v1/apply/me/documents/upload-url",
+        json={"kind": "birth_certificate", "content_type": "image/png"},
+        headers=parent,
+    )
+
+    confirmed = await client.post(
+        "/api/v1/apply/me/documents",
+        json={"kind": "birth_certificate", "object_key": ticket.json()["object_key"]},
+        headers=parent,
+    )
+
+    assert confirmed.status_code == 422
+    assert "did not arrive" in confirmed.text
+
+
+async def test_a_stranger_cannot_ask_for_an_upload_url(client, setup) -> None:
+    """There is no application id in any of these routes: the session is
+    scoped to one form, so there is nothing for a caller to change."""
+    response = await client.post(
+        "/api/v1/apply/me/documents/upload-url",
+        json={"kind": "birth_certificate", "content_type": "image/png"},
+        headers=headers(setup["subdomain"]),
+    )
+
+    assert response.status_code in (401, 403)

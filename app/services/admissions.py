@@ -21,6 +21,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
+from app.core.config import settings
 from app.domain.admissions import (
     ApplicationDraft,
     ApplicationState,
@@ -48,6 +49,15 @@ from app.domain.registration import (
     build_checklist,
 )
 from app.domain.roles import Permission, Principal, Role, can
+from app.integrations.storage.base import (
+    ObjectStore,
+    Scope,
+    UploadRejected,
+    UploadTicket,
+    build_object_key,
+    check_declared_upload,
+    check_stored_object,
+)
 from app.models.audit import AuditOutcome
 from app.models.guardian import Relationship
 from app.repositories.admissions import AdmissionsRepository, QueueRow
@@ -114,6 +124,7 @@ class AdmissionsService:
         invoicing: InvoicingService,
         users: UserRepository,
         audit: AuditRepository,
+        storage: ObjectStore,
     ) -> None:
         self._uow = uow
         self._admissions = admissions
@@ -124,6 +135,7 @@ class AdmissionsService:
         self._invoicing = invoicing
         self._users = users
         self._audit = audit
+        self._storage = storage
 
     # ----------------------------------------------------------------------
     # Guards
@@ -280,6 +292,102 @@ class AdmissionsService:
             )
             await self._uow.commit()
             return application
+
+
+    # ----------------------------------------------------------------------
+    # Documents, while the form is still open
+    # ----------------------------------------------------------------------
+    async def request_upload(
+        self, principal: Principal, *, kind: str, content_type: str, size_bytes: int | None
+    ) -> UploadTicket:
+        """A URL the parent's phone PUTs the photograph straight to.
+
+        The best moment to get a birth certificate is while a parent is sitting
+        with the form open and the certificate in their hand. Every week after
+        that is a phone call.
+
+        The bytes never come through this API, and the key is ours rather than
+        the client's: a client that chooses its own key is a client that can
+        overwrite another school's object. It is written under
+        `scope=application`, because the document exists before the child does
+        and has to survive the application becoming a pupil.
+        """
+        application = await self._own_application(principal)
+
+        try:
+            check_declared_upload(content_type=content_type, size_bytes=size_bytes)
+            object_key = build_object_key(
+                school_id=application.school_id,
+                scope=Scope.APPLICATION,
+                owner_id=application.id,
+                kind=kind,
+                content_type=content_type,
+            )
+        except UploadRejected as exc:
+            raise Invalid(str(exc)) from exc
+
+        return self._storage.presign_upload(
+            object_key=object_key,
+            content_type=content_type,
+            expires_in=settings.STORAGE_UPLOAD_TTL_SECONDS,
+        )
+
+    async def attach_document(
+        self,
+        principal: Principal,
+        *,
+        object_key: str,
+        kind: str,
+        file_name: str | None,
+        context: RequestContext,
+    ) -> dict[str, Any]:
+        """Record a file that has already been uploaded.
+
+        Storage is asked what actually arrived rather than trusting what the
+        client said it would send. A presigned PUT cannot enforce a length, so
+        this is the check that makes the size limit real — and it is what stops
+        a record existing for an upload that never finished, which on a 3G
+        connection is a real fraction of them.
+        """
+        application = await self._own_application(principal)
+        if application.state not in (ApplicationState.STARTED, ApplicationState.SUBMITTED):
+            raise Invalid("this application has been decided; documents go to the school now")
+
+        stored = await self._storage.head(object_key=object_key)
+        if stored is None:
+            raise Invalid("that upload did not arrive; try again")
+        try:
+            check_stored_object(stored)
+        except UploadRejected as exc:
+            # Leaving it behind would mean paying to store something we have
+            # refused to record.
+            await self._storage.delete(object_key=object_key)
+            raise Invalid(str(exc)) from exc
+
+        async with self._uow:
+            row = await self._admissions.add_document(
+                school_id=application.school_id,
+                application_id=application.id,
+                kind=kind,
+                file_url=object_key,
+                file_name=file_name,
+                content_type=stored.content_type,
+                size_bytes=stored.size_bytes,
+            )
+            await self._audit.record(
+                school_id=application.school_id,
+                action="application.document_added",
+                actor_user_id=principal.user_id,
+                actor_role=principal.role.value,
+                entity_type="application",
+                entity_id=application.id,
+                changed={"kind": kind},
+                ip=context.ip,
+                user_agent=context.user_agent,
+            )
+            await self._uow.commit()
+
+        return row
 
     # ----------------------------------------------------------------------
     # Screening

@@ -41,6 +41,7 @@ from app.schemas.admission import (
     ApplyVerifyRequest,
 )
 from app.schemas.auth import TokenResponse
+from app.schemas.student import DocumentCreateRequest, UploadTicketRequest, UploadTicketResponse
 from app.services.admissions import ApplicationView, Invalid, NotAllowed, NotFound
 from app.services.auth import OtpRejected, RequestContext
 
@@ -257,6 +258,75 @@ async def submit(
     """
     try:
         await service.submit(principal, context=context)
+        view = await service.my_application(principal)
+    except (NotAllowed, NotFound, Invalid) as exc:
+        raise _handle(exc) from exc
+    return _as_state(view)
+
+
+@router.post(
+    "/me/documents/upload-url",
+    response_model=UploadTicketResponse,
+    summary="Get a URL to upload a document to",
+)
+async def document_upload_url(
+    body: UploadTicketRequest,
+    principal: PrincipalDep,
+    service: AdmissionsServiceDep,
+) -> UploadTicketResponse:
+    """Step one of two. The parent's phone PUTs the photograph straight to
+    storage; the bytes never come through this API.
+
+    The best moment to get a birth certificate is while somebody is sitting
+    with the form open and the certificate in their hand. Every week after
+    that is a phone call.
+    """
+    try:
+        ticket = await service.request_upload(
+            principal,
+            kind=body.kind,
+            content_type=body.content_type,
+            size_bytes=body.size_bytes,
+        )
+    except (NotAllowed, NotFound, Invalid) as exc:
+        raise _handle(exc) from exc
+
+    return UploadTicketResponse(
+        url=ticket.url,
+        object_key=ticket.object_key,
+        expires_at=ticket.expires_at,
+        headers=ticket.headers,
+        max_bytes=ticket.max_bytes,
+    )
+
+
+@router.post(
+    "/me/documents",
+    response_model=ApplyStateResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Confirm an uploaded document",
+)
+async def attach_document(
+    body: DocumentCreateRequest,
+    principal: PrincipalDep,
+    service: AdmissionsServiceDep,
+    context: ContextDep,
+) -> ApplyStateResponse:
+    """Step two. Storage is asked what actually arrived rather than trusting
+    what the client said it would send — a presigned PUT cannot enforce a
+    length, and on a 3G connection a real fraction of uploads never finish.
+
+    Answers with the whole form state, so the checklist on the parent's screen
+    updates without a second request.
+    """
+    try:
+        await service.attach_document(
+            principal,
+            object_key=body.object_key,
+            kind=body.kind,
+            file_name=body.file_name,
+            context=context,
+        )
         view = await service.my_application(principal)
     except (NotAllowed, NotFound, Invalid) as exc:
         raise _handle(exc) from exc
