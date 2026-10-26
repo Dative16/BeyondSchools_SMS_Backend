@@ -182,7 +182,15 @@ class InvoiceDetailResponse(BaseModel):
     reference: str
     kind: str
     student_id: UUID | None
+    #: Who it is for. Carried here rather than fetched separately, because a
+    #: second request is a second moment: the name and the balance could
+    #: otherwise be read from different seconds of a term run.
+    admission_no: str | None
+    student_name: str | None
+    class_name: str | None
     term_id: UUID | None
+    term_label: str | None
+    academic_year: str | None
     issued_on: date
     due_date: date
     currency: str

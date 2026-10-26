@@ -108,6 +108,7 @@ class FeesRepository(Protocol):
     async def payments_for(self, invoice_id: UUID) -> list[dict[str, Any]]: ...
     async def payment(self, payment_id: UUID) -> dict[str, Any] | None: ...
     async def recent_payments(self, *, limit: int) -> list[dict[str, Any]]: ...
+    async def invoice_subject(self, invoice_id: UUID) -> dict[str, Any] | None: ...
     async def statement(self, student_id: UUID) -> list[dict[str, Any]]: ...
     async def arrears(
         self, *, as_of: date, limit: int, offset: int
@@ -763,3 +764,32 @@ class SqlFeesRepository:
             {"limit": limit},
         )
         return [dict(row._mapping) for row in rows]
+
+    async def invoice_subject(self, invoice_id: UUID) -> dict[str, Any] | None:
+        """Who the bill is for, and which term it belongs to.
+
+        The detail response carried neither, so the header could only say
+        "INV/Term1/0094" — and the screen had to go and fetch the child
+        separately, which is a second request and a second moment: the name
+        and the balance could be read from different seconds of the term run.
+        """
+        row = (
+            await self._session.execute(
+                text(
+                    "SELECT s.admission_no, "
+                    "       trim(coalesce(s.first_name, '') || ' ' || "
+                    "            coalesce(s.surname, '')) AS student_name, "
+                    "       cg.name AS class_name, t.label AS term_label, "
+                    "       y.label AS academic_year "
+                    "  FROM invoice i "
+                    "  LEFT JOIN student s ON s.id = i.student_id "
+                    "  LEFT JOIN enrolment e ON e.id = i.enrolment_id "
+                    "  LEFT JOIN class_group cg ON cg.id = e.class_group_id "
+                    "  LEFT JOIN term t ON t.id = i.term_id "
+                    "  LEFT JOIN academic_year y ON y.id = t.academic_year_id "
+                    " WHERE i.id = :id"
+                ),
+                {"id": invoice_id},
+            )
+        ).one_or_none()
+        return dict(row._mapping) if row else None

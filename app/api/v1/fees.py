@@ -306,6 +306,7 @@ async def invoice_detail(
         raise _handle(exc) from exc
 
     invoice = detail["invoice"]
+    subject = detail["subject"]
     day = as_of or date.today()
     facts = InvoiceFacts(
         billed=Decimal(invoice.billed),
@@ -319,7 +320,12 @@ async def invoice_detail(
         reference=invoice.reference,
         kind=str(invoice.kind),
         student_id=invoice.student_id,
+        admission_no=subject.get("admission_no"),
+        student_name=subject.get("student_name"),
+        class_name=subject.get("class_name"),
         term_id=invoice.term_id,
+        term_label=subject.get("term_label"),
+        academic_year=subject.get("academic_year"),
         issued_on=invoice.issued_on,
         due_date=invoice.due_date,
         currency=invoice.currency,

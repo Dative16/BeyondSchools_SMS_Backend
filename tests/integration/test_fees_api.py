@@ -895,3 +895,56 @@ async def test_the_feed_is_behind_payment_read(client, setup) -> None:
     response = await client.get("/api/v1/payments/recent", headers=teacher)
 
     assert response.status_code == 403
+
+
+async def test_an_invoice_says_who_it_is_for(client, setup, bursar) -> None:
+    """The header reads "Frank Lyimo · Standard 6 Blue · due 31 January". The
+    detail response carried none of that, so the screen had to fetch the child
+    separately — a second request and a second moment, with the name and the
+    balance read from different seconds of a term run."""
+    invoice_id = await invoice_for(client, bursar, setup)
+
+    detail = await client.get(f"/api/v1/fees/invoices/{invoice_id}", headers=bursar)
+
+    body = detail.json()
+    assert body["student_name"].startswith("Child0")
+    assert body["class_name"] == "Standard 4 Blue"
+    assert body["term_label"] == "Term 1"
+    assert body["admission_no"]
+
+
+async def test_an_invoice_with_no_term_comes_back_with_nulls_not_an_error(
+    client, setup, bursar, owner_session
+) -> None:
+    """A deposit is raised at an offer, before there is a term to bill in. The
+    joins have to be outer ones, or the detail screen 500s on the first bill a
+    school ever raises."""
+    enrolment_id = await owner_session.scalar(
+        text("SELECT id FROM enrolment WHERE student_id = :s"),
+        {"s": setup["students"][0]},
+    )
+    invoice_id = uuid4()
+    await owner_session.execute(
+        text(
+            "INSERT INTO invoice (id, school_id, reference, kind, student_id, "
+            " enrolment_id, term_id, issued_on, due_date, currency, billed, settled, "
+            " is_void, created_at, updated_at) "
+            "VALUES (:id, :school_id, :ref, 'deposit', :student, :enrolment, NULL, "
+            " current_date, current_date + 14, 'TZS', 0, 0, false, now(), now())"
+        ),
+        {
+            "id": invoice_id,
+            "school_id": setup["school_id"],
+            "ref": f"DEP-{uuid4().hex[:6]}",
+            "student": setup["students"][0],
+            "enrolment": enrolment_id,
+        },
+    )
+    await owner_session.commit()
+
+    detail = await client.get(f"/api/v1/fees/invoices/{invoice_id}", headers=bursar)
+
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["term_label"] is None
+    assert detail.json()["academic_year"] is None
+    assert detail.json()["student_name"].startswith("Child0")

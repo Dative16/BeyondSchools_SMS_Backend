@@ -638,6 +638,7 @@ class InvoicingService:
 
         return {
             "invoice": invoice,
+            "subject": await self._fees.invoice_subject(invoice_id) or {},
             "lines": await self._fees.lines(invoice_id),
             "payments": await self._fees.payments_for(invoice_id),
         }
