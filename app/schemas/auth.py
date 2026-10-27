@@ -15,6 +15,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.domain.admissions import normalise_phone
+from app.domain.identity import MIN_PASSWORD_LENGTH
 from app.domain.roles import Permission, Role
 
 
@@ -22,6 +23,10 @@ class LoginRequest(BaseModel):
     #: Email or phone, whichever the user thinks of as their login.
     identifier: str = Field(min_length=3, max_length=160)
     password: str = Field(min_length=1, max_length=256)
+    #: Unticked means a shared handset, which in most Tanzanian households is
+    #: the ordinary case: the session lasts a working day instead of a
+    #: fortnight. Defaults to true so an existing caller is unaffected.
+    remember: bool = True
 
 
 class OtpStartRequest(BaseModel):
@@ -58,6 +63,19 @@ class OtpSentResponse(BaseModel):
     sent: Literal[True] = True
     expires_at: datetime
     resend_after_seconds: int
+
+
+class PasswordResetRequest(BaseModel):
+    """Set a password by proving the phone, not by knowing the old one.
+
+    Serves both screens that need it: somebody who has forgotten a password
+    cannot supply the current one, and somebody setting their first never had
+    one. The code can only have gone to the number already on the record.
+    """
+
+    phone: str = Field(min_length=9, max_length=20)
+    code: str = Field(min_length=4, max_length=8)
+    new_password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=200)
 
 
 class ChangePasswordRequest(BaseModel):

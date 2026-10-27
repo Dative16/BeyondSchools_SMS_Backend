@@ -20,6 +20,11 @@ from uuid import UUID
 # --------------------------------------------------------------------------
 # Passwords
 # --------------------------------------------------------------------------
+#: Named rather than written into the one place that checks it, because three
+#: screens now tell somebody what it is and all three have to say the same
+#: number as the server enforces.
+MIN_PASSWORD_LENGTH = 10
+
 #: Failed attempts before an account is locked. Five is low enough to make
 #: password spraying useless and high enough that a parent mistyping on a
 #: phone keyboard still gets in.
@@ -29,6 +34,33 @@ MAX_FAILED_LOGINS = 5
 #: has no helpdesk, and an hour-long lock on a bursar at 8 a.m. on invoice day
 #: costs more than it protects.
 LOCKOUT_DURATION = timedelta(minutes=15)
+
+
+#: Warn only from here. Telling every failed attempt how many are left hands
+#: somebody spraying passwords a progress bar; saying nothing until the last
+#: two leaves a real person, mistyping on a phone keyboard, about to be locked
+#: out with no warning at all. Two is where the warning is worth more to them
+#: than to an attacker who has already had three goes.
+WARN_FROM_ATTEMPTS_LEFT = 2
+
+
+def attempts_left(failed_logins: int) -> int:
+    """How many tries remain before the lock-out."""
+    return max(MAX_FAILED_LOGINS - failed_logins, 0)
+
+
+def lockout_warning(failed_logins: int) -> str | None:
+    """The sentence to add to a rejection, or nothing.
+
+    Nothing is the usual answer. A message that counts down from five is a
+    message that tells a password sprayer exactly how far it has got.
+    """
+    left = attempts_left(failed_logins)
+    if left <= 0 or left > WARN_FROM_ATTEMPTS_LEFT:
+        return None
+    minutes = int(LOCKOUT_DURATION.total_seconds() // 60)
+    tries = "one more attempt" if left == 1 else f"{left} more attempts"
+    return f"{tries} and this account locks for {minutes} minutes"
 
 
 class LoginOutcome(StrEnum):
@@ -120,6 +152,12 @@ def evaluate_login(
 #: network, short enough that a message left on a shared phone goes stale.
 OTP_TTL = timedelta(minutes=5)
 
+#: Except a password reset, which is a longer errand: read the code, choose a
+#: password, type it twice, on a phone, possibly after walking somewhere with
+#: signal. Five minutes is the window in which people give up and ring the
+#: office instead.
+PASSWORD_RESET_TTL = timedelta(minutes=30)
+
 #: Guesses allowed per code. Six digits is a million possibilities, so the
 #: attempt counter is what makes the code safe, not its length.
 MAX_OTP_ATTEMPTS = 5
@@ -143,6 +181,11 @@ class OtpPurpose(StrEnum):
     LOGIN = "login"
     PASSWORD_RESET = "password_reset"  # noqa: S105 - an enum member, not a secret
     PHONE_CHANGE = "phone_change"
+
+
+def otp_ttl(purpose: OtpPurpose) -> timedelta:
+    """How long a code of this kind lives."""
+    return PASSWORD_RESET_TTL if purpose is OtpPurpose.PASSWORD_RESET else OTP_TTL
 
 
 class OtpOutcome(StrEnum):

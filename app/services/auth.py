@@ -32,14 +32,16 @@ from app.core.security import (
     verify_password,
 )
 from app.domain.identity import (
-    OTP_TTL,
+    MIN_PASSWORD_LENGTH,
     LoginOutcome,
     OtpOutcome,
     OtpPurpose,
     evaluate_login,
     evaluate_otp,
     evaluate_refresh,
+    lockout_warning,
     may_send_otp,
+    otp_ttl,
 )
 from app.domain.roles import Principal, Role
 from app.integrations.sms.base import SmsMessage, SmsSender
@@ -145,6 +147,7 @@ class AuthService:
         identifier: str,
         password: str,
         context: RequestContext,
+        remember: bool = True,
         as_of: datetime | None = None,
     ) -> Session:
         """Exchange a password for a session.
@@ -190,10 +193,21 @@ class AuthService:
 
                 if decision.outcome in (LoginOutcome.LOCKED, LoginOutcome.INACTIVE):
                     raise AccountLocked(decision.reason)
-                raise InvalidCredentials("those details did not match an account")
+
+                # The warning, when there is one, is about the account rather
+                # than about the attempt: it appears whether or not the number
+                # exists would be a way to probe, so it is only ever added for
+                # an account that is genuinely close to its limit.
+                warning = lockout_warning(decision.failed_logins) if user else None
+                raise InvalidCredentials(
+                    "those details did not match an account"
+                    + (f". {warning[0].upper()}{warning[1:]}." if warning else "")
+                )
 
             assert user is not None  # evaluate_login cannot allow a missing user
-            session = await self._open_session(user=user, context=context, now=now)
+            session = await self._open_session(
+                user=user, context=context, now=now, remember=remember
+            )
 
             await self._audit.record(
                 school_id=user.school_id,
@@ -219,8 +233,10 @@ class AuthService:
         Revoking the rest is the point: somebody changing their password after
         a scare must not leave the thief's session alive for another fortnight.
         """
-        if len(new_password) < 10:
-            raise AuthError("a password needs at least 10 characters")
+        if len(new_password) < MIN_PASSWORD_LENGTH:
+            raise AuthError(
+                f"a password needs at least {MIN_PASSWORD_LENGTH} characters"
+            )
 
         async with self._uow:
             user = await self._users.find_by_id(principal.user_id)
@@ -384,7 +400,8 @@ class AuthService:
                 raise OtpRejected(reason)
 
             code = generate_otp()
-            expires_at = now + OTP_TTL
+            ttl = otp_ttl(purpose)
+            expires_at = now + ttl
             await self._users.create_otp_challenge(
                 school_id=school_id,
                 phone=phone,
@@ -394,7 +411,7 @@ class AuthService:
                 ip=context.ip,
             )
 
-            minutes = int(OTP_TTL.total_seconds() // 60)
+            minutes = int(ttl.total_seconds() // 60)
             await self._sms.send(
                 SmsMessage(
                     to=phone,
@@ -472,6 +489,89 @@ class AuthService:
                     else "that code is not right"
                 )
 
+            await self._uow.commit()
+
+    async def set_password_with_code(
+        self,
+        *,
+        school_id: UUID,
+        phone: str,
+        code: str,
+        new_password: str,
+        context: RequestContext,
+        as_of: datetime | None = None,
+    ) -> None:
+        """Set a password by proving the phone instead of knowing the old one.
+
+        Two screens need this and neither can use `change_password`: somebody
+        who has forgotten their password cannot supply it, and somebody setting
+        their first one never had it. The code is the proof, and it can only go
+        to the number already on the record — which is what stops this being a
+        way to take over an account by claiming a new number.
+
+        Three things happen besides the password itself, and each matters:
+
+        The lock-out is cleared. Somebody who guessed wrong five times and then
+        reset would otherwise still be locked out of the password they just
+        chose, which reads as the reset not having worked.
+
+        Every other session ends. If somebody else was in the account, this is
+        the thing that puts them out, and the screen says so.
+
+        No session comes back. A reset hands over an account, so it finishes at
+        the sign-in page with the new password typed once more — it is one more
+        step, and it is the step that catches a password typed wrong twice.
+        """
+        if len(new_password) < MIN_PASSWORD_LENGTH:
+            raise AuthError(
+                f"a password needs at least {MIN_PASSWORD_LENGTH} characters"
+            )
+
+        now = as_of or datetime.now(UTC)
+        await self.verify_otp_code(
+            school_id=school_id,
+            phone=phone,
+            purpose=OtpPurpose.PASSWORD_RESET,
+            code=code,
+            context=context,
+            as_of=now,
+        )
+
+        async with self._uow:
+            user = await self._users.find_by_identifier(phone)
+            if user is None or not user.is_active:
+                # The same answer as a wrong code. Whether a number belongs to
+                # anybody at this school is not something this page may reveal.
+                await self._audit.record(
+                    school_id=school_id,
+                    action="auth.password_reset",
+                    outcome=AuditOutcome.DENIED,
+                    note=f"{phone}: no active account",
+                    ip=context.ip,
+                    user_agent=context.user_agent,
+                )
+                await self._uow.commit()
+                raise InvalidCredentials("those details did not match an account")
+
+            user.password_hash = hash_password(new_password)
+            user.must_change_password = False
+            await self._users.record_login_result(
+                user.id, failed_logins=0, locked_until=None, succeeded=False
+            )
+            revoked = await self._users.revoke_all_for_user(
+                user.id, reason="password reset"
+            )
+            await self._audit.record(
+                school_id=user.school_id,
+                action="auth.password_reset",
+                actor_user_id=user.id,
+                actor_role=user.role.value,
+                entity_type="app_user",
+                entity_id=user.id,
+                changed={"sessions_ended": revoked},
+                ip=context.ip,
+                user_agent=context.user_agent,
+            )
             await self._uow.commit()
 
     async def login_with_otp(
@@ -708,13 +808,29 @@ class AuthService:
         )
 
     async def _open_session(
-        self, *, user: AppUser, context: RequestContext, now: datetime
+        self,
+        *,
+        user: AppUser,
+        context: RequestContext,
+        now: datetime,
+        remember: bool = True,
     ) -> Session:
+        """Open a session. `remember` is how long the refresh token lives.
+
+        Unticked means this handset is shared, which in a Tanzanian household
+        is the ordinary case rather than the exception: a fortnight on a phone
+        three people use is a fortnight any of them can read a fee statement.
+        """
         principal = await self._principal_for(user)
         access = issue_access_token(principal)
 
         refresh = generate_token()
-        refresh_expires_at = now + timedelta(seconds=settings.REFRESH_TOKEN_TTL_SECONDS)
+        ttl = (
+            settings.REFRESH_TOKEN_TTL_SECONDS
+            if remember
+            else settings.SESSION_TTL_SECONDS
+        )
+        refresh_expires_at = now + timedelta(seconds=ttl)
         await self._users.store_refresh_token(
             user_id=user.id,
             school_id=user.school_id,

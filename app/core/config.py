@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     JWT_PUBLIC_KEY_PATH: str
     ACCESS_TOKEN_TTL_SECONDS: int = 900
     REFRESH_TOKEN_TTL_SECONDS: int = 1_209_600
+    #: When "keep me signed in" is left unticked. A fortnight on a handset
+    #: several people use is a fortnight somebody else can read a fee
+    #: statement; a working day is long enough to finish what you came for.
+    SESSION_TTL_SECONDS: int = 43_200
 
     #: This service's own address, as the outside world reaches it. Used to
     #: build the URLs the local storage adapter serves, and nothing else.

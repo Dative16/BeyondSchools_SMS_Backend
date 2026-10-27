@@ -15,6 +15,7 @@ with every ordinary API call.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
@@ -39,6 +40,7 @@ from app.schemas.auth import (
     OtpLoginRequest,
     OtpSentResponse,
     OtpStartRequest,
+    PasswordResetRequest,
     PrincipalResponse,
     SchoolBrandResponse,
     TokenResponse,
@@ -63,10 +65,16 @@ RefreshCookie = Annotated[str | None, Cookie(alias=REFRESH_COOKIE)]
 
 
 def _set_refresh_cookie(response: Response, session: AuthSession) -> None:
+    # The cookie outlives the token by no more than a second: a browser that
+    # kept it longer would send a dead token and get a sign-out the person did
+    # not ask for, which looks like the app forgetting them at random.
+    max_age = max(
+        int((session.refresh_expires_at - datetime.now(UTC)).total_seconds()), 0
+    )
     response.set_cookie(
         REFRESH_COOKIE,
         session.refresh_token,
-        max_age=settings.REFRESH_TOKEN_TTL_SECONDS,
+        max_age=max_age,
         httponly=True,
         samesite="lax",
         secure=settings.ENVIRONMENT != "local",
@@ -129,6 +137,7 @@ async def login(
             school_id=school.id if school else None,
             identifier=body.identifier,
             password=body.password,
+            remember=body.remember,
             context=context,
         )
     except AccountLocked as exc:
@@ -348,3 +357,47 @@ async def roles(principal: PrincipalDep) -> dict[str, list[str]]:
         for role in Role
         if role is not Role.PLATFORM_ADMIN
     }
+
+
+@router.post(
+    "/password/reset",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Set a password with a code instead of the old one",
+)
+async def reset_password(
+    body: PasswordResetRequest,
+    service: AuthServiceDep,
+    school: SchoolDep,
+    context: ContextDep,
+) -> Response:
+    """The other half of `/otp/start` with `purpose=password_reset`.
+
+    `/password` cannot serve either screen that needs this: somebody who has
+    forgotten a password cannot supply the current one, and somebody setting
+    their first never had one. The code is the proof, and it can only have
+    gone to the number already on the record.
+
+    Answers the same way for a number nobody has and a code that was wrong.
+    Whether a number belongs to a family at this school is not something an
+    unauthenticated page may be used to find out.
+    """
+    try:
+        await service.set_password_with_code(
+            school_id=school.id,
+            phone=body.phone,
+            code=body.code,
+            new_password=body.new_password,
+            context=context,
+        )
+    # A code that was wrong, expired or already spent, and a number nobody
+    # has, all answer 401 and say the same thing. 429 here would have told an
+    # unauthenticated caller the difference between a bad code and a number
+    # the school does not hold — which is the question this page must not be
+    # usable to ask. Rate limiting belongs on `/otp/start`, where the sending
+    # happens.
+    except (OtpRejected, InvalidCredentials) as exc:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, exc.reason) from exc
+    except AuthError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.reason) from exc
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

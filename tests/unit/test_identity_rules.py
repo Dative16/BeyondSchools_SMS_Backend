@@ -17,13 +17,17 @@ from app.domain.identity import (
     LoginOutcome,
     OtpFacts,
     OtpOutcome,
+    OtpPurpose,
     RefreshFacts,
     RefreshOutcome,
     UserFacts,
+    attempts_left,
     evaluate_login,
     evaluate_otp,
     evaluate_refresh,
+    lockout_warning,
     may_send_otp,
+    otp_ttl,
 )
 
 NOW = datetime(2027, 1, 20, 7, 30, tzinfo=UTC)
@@ -264,3 +268,44 @@ def test_an_unknown_token_is_refused() -> None:
     decision = evaluate_refresh(token=None, as_of=NOW)
 
     assert decision.outcome is RefreshOutcome.NOT_FOUND
+
+
+# --------------------------------------------------------------------------
+# Warning somebody they are about to be locked out
+# --------------------------------------------------------------------------
+def test_nothing_is_said_for_the_first_few_attempts() -> None:
+    """A message that counts down from five tells a password sprayer exactly
+    how far it has got."""
+    assert lockout_warning(0) is None
+    assert lockout_warning(1) is None
+    assert lockout_warning(2) is None
+
+
+def test_the_warning_appears_only_near_the_limit() -> None:
+    """By the fourth attempt an attacker has learnt most of what the countdown
+    could tell them, and a real person mistyping on a phone keyboard is about
+    to be locked out with no warning at all."""
+    assert lockout_warning(3) == "2 more attempts and this account locks for 15 minutes"
+    assert lockout_warning(4) == "one more attempt and this account locks for 15 minutes"
+
+
+def test_nothing_is_said_once_the_account_is_locked() -> None:
+    """There is no attempt left to warn about, and the lock-out speaks for
+    itself."""
+    assert lockout_warning(MAX_FAILED_LOGINS) is None
+    assert lockout_warning(MAX_FAILED_LOGINS + 3) is None
+
+
+def test_attempts_left_never_goes_negative() -> None:
+    assert attempts_left(0) == MAX_FAILED_LOGINS
+    assert attempts_left(MAX_FAILED_LOGINS + 2) == 0
+
+
+# --------------------------------------------------------------------------
+# How long a code lives
+# --------------------------------------------------------------------------
+def test_a_reset_code_lives_longer_than_a_login_code() -> None:
+    """A reset is a longer errand: read the code, choose a password, type it
+    twice, on a phone, possibly after walking somewhere with signal."""
+    assert otp_ttl(OtpPurpose.PASSWORD_RESET) > otp_ttl(OtpPurpose.LOGIN)
+    assert otp_ttl(OtpPurpose.APPLY) == otp_ttl(OtpPurpose.LOGIN)
