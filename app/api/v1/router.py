@@ -30,5 +30,11 @@ api_router.include_router(admissions.router, prefix="/admissions", tags=["admiss
 api_router.include_router(fees.router, prefix="/fees", tags=["fees"])
 api_router.include_router(payments.router, prefix="/payments", tags=["payments"])
 
-# Each lands with its phase:
-#   2    timetable, assignments, promotion, reports
+# Not mounted, because they do not exist yet — and the honest account of that
+# is in ROADMAP.md rather than in a comment here. In short: attendance, marks,
+# report cards, the timetable, homework and the promotion engine have no table,
+# no model, no repository and no service between them. That is the whole
+# academic half of the product, and it is stage 2 of the roadmap, not a tail on
+# the end of this one.
+#
+#   timetable, assignments, promotion, reports
