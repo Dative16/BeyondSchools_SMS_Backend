@@ -34,6 +34,31 @@ jobs:
         run: ruff check app tests
       - name: Types
         run: mypy app
+      # The web repo generates its TypeScript from the committed openapi.json,
+      # so a route added without re-dumping it is a contract the client cannot
+      # see. That is how /auth/password/reset came to be served by the API,
+      # called by the web app, and absent from its types at the same time.
+      - name: API contract is current
+        run: |
+          python -m scripts.dump_openapi > /tmp/openapi.json
+          if ! diff -q openapi.json /tmp/openapi.json; then
+            echo "::error::openapi.json is stale. Run 'make openapi' and commit the result."
+            diff openapi.json /tmp/openapi.json | head -40
+            exit 1
+          fi
+        env:
+          SECRET_KEY: ci
+          POSTGRES_HOST: localhost
+          POSTGRES_DB: bs_sms
+          POSTGRES_USER: bs_sms
+          POSTGRES_PASSWORD: bs_sms
+          REDIS_URL: redis://localhost:6379/0
+          CELERY_BROKER_URL: redis://localhost:6379/1
+          CELERY_RESULT_BACKEND: redis://localhost:6379/2
+          JWT_ISSUER: http://localhost
+          JWT_PRIVATE_KEY_PATH: /tmp/jwt_private.pem
+          JWT_PUBLIC_KEY_PATH: /tmp/jwt_public.pem
+
       - name: Tests
         run: pytest -q
         env:
