@@ -89,15 +89,33 @@ intake, not by size.
 
 Small, and it stops the next five steps from drifting.
 
-- Regenerate `src/api/schema.d.ts` and add the OpenAPI→types check to CI, so
-  the drift found above cannot recur silently.
-- Wire `app/services/notifications.py` to the Beem provider and the
-  `notifications` Celery task. The January gate says a parent is told their
-  child is enrolled and is given a way in; nothing sends that today.
-- Resolve Beem's unreachability from the container
-  (`CERTIFICATE_VERIFY_FAILED`, local TLS interception) so this is testable
-  without a real handset.
-- Bring up the Celery worker and beat containers, which are not running.
+**Done.** The contract drift is closed and guarded in both repos' CI, and an
+enrolled child's guardian is now sent a message.
+
+**Corrected while doing it.** Two items in the first draft of this list were
+wrong, and the measurement that produced them was too shallow:
+
+- *"Bring up the Celery worker and beat containers, which are not running."*
+  They are not runnable. `celery_app.conf.beat_schedule` names three tasks —
+  `reconciliation.reconcile_previous_day`, `notifications.send_fee_reminders`,
+  `invoices.audit_balances` — and all three modules are one-line stubs, so the
+  worker registers **zero** tasks. Starting beat would fire `NotRegistered`
+  nightly and weekly, for ever. The containers stay down until the tasks
+  exist, and the tasks are not step 0: fee reminders need a reminder message,
+  a query for who owes and a send loop; the balance audit and the nightly
+  reconciliation need the reconciliation service, which is also a stub.
+- *"Resolve Beem's unreachability from the container."* Not resolvable in this
+  repo, because it is not this repo's problem. The container is handed a
+  certificate for `*.beem.africa` issued by `Avast Web/Mail Shield Root`:
+  the antivirus on the development machine is terminating the TLS connection
+  and re-signing it, and the container does not trust that root. Production is
+  unaffected — nothing intercepts there. The fix belongs on the machine
+  (exclude `*.beem.africa` from Avast's HTTPS scanning), and the one thing not
+  to do is relax certificate verification in code to make a local antivirus
+  happy, which would ship as a real weakness to work around a local one.
+
+**Still owed here:** the first real Beem send to the test handset, once the
+machine stops intercepting it. Everything up to the gateway is exercised.
 
 The spec files Communications under Phase 3. That is wrong for this gate: an
 intake with no parallel spreadsheet means the school stops phoning parents by

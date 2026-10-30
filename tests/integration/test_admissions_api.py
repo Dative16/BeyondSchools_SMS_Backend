@@ -492,6 +492,102 @@ async def test_a_parent_applies_and_a_child_lands_on_the_roll(
     # child, or the money is invisible on their statement.
     assert Decimal(profile.json()["settled"]) == Decimal("265000.00")
 
+    # And the parent is told. A school running its intake on this system has
+    # stopped phoning families by hand, so the enrolment is only finished when
+    # the guardian has the admission number in their hand.
+    told = (
+        (
+            await owner_session.execute(
+                text(
+                    "SELECT note, changed FROM audit_event WHERE school_id = :school "
+                    "AND action = 'notification.enrolment_confirmed'"
+                ),
+                {"school": setup["school_id"]},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    assert len(told) == 1, "exactly one message, to the guardian who applied"
+    assert "0712998877" in told[0]["note"]
+    assert "(sent)" in told[0]["note"]
+    message = told[0]["changed"]["body"]
+    assert "Happiness" in message
+    assert body["application"]["admission_no"] in message, "the number they will be asked for"
+
+
+async def test_a_parent_who_gives_a_different_contact_number_still_has_a_login(
+    client, setup, fixed_code, owner_session
+) -> None:
+    """The case the form allows and nothing tested.
+
+    A mother applies from her own handset and gives the father's number as the
+    family contact. Both are legitimate and they are different numbers, and
+    enrolment used to promote the typed one — which matched no account, so the
+    family finished enrolment with no way to sign in and no way to pay.
+    """
+    parent = await applicant(client, setup, fixed_code, phone="0712998877")
+    await fill_in(client, parent, setup, guardian_phone="0754118902")
+    await client.post("/api/v1/apply/me/submit", headers=parent)
+
+    admin = await staff_token(client, email=setup["admin_email"], subdomain=setup["subdomain"])
+    bursar = await staff_token(client, email=setup["bursar_email"], subdomain=setup["subdomain"])
+    application_id = (await client.get("/api/v1/admissions", headers=admin)).json()["items"][0][
+        "id"
+    ]
+
+    await client.post(f"/api/v1/admissions/{application_id}/screen", json={}, headers=admin)
+    offered = await client.post(f"/api/v1/admissions/{application_id}/offer", headers=admin)
+    await client.post(
+        f"/api/v1/admissions/{application_id}/deposit",
+        json={"amount": offered.json()["deposit_billed"], "receipt": "RCPT-0003"},
+        headers=bursar,
+    )
+    enrolled = await client.post(
+        f"/api/v1/admissions/{application_id}/enrol",
+        json={"class_group_id": str(setup["class_group_id"])},
+        headers=admin,
+    )
+    assert enrolled.status_code == 201, enrolled.text
+
+    # The account that exists is the one an OTP proved, and it is the one that
+    # becomes the family's login.
+    row = (
+        await owner_session.execute(
+            text(
+                "SELECT role::text AS role, guardian_id IS NOT NULL AS linked "
+                "  FROM app_user "
+                " WHERE phone = '0712998877' AND school_id = :school_id"
+            ),
+            {"school_id": setup["school_id"]},
+        )
+    ).one()
+    assert row.role == "guardian"
+    assert row.linked, "promoted and tied to the guardian record"
+
+    # The guardian record still carries the contact number the form gave,
+    # because that is what a payment is matched back to.
+    contact = (
+        await owner_session.execute(
+            text("SELECT phone FROM guardian WHERE school_id = :school_id"),
+            {"school_id": setup["school_id"]},
+        )
+    ).scalar_one()
+    assert contact == "0754118902"
+
+    # And the message goes to the number that is the login, since it tells
+    # them to sign in with it.
+    note = (
+        await owner_session.execute(
+            text(
+                "SELECT note FROM audit_event WHERE school_id = :school_id "
+                "AND action = 'notification.enrolment_confirmed'"
+            ),
+            {"school_id": setup["school_id"]},
+        )
+    ).scalar_one()
+    assert "0712998877" in note
+
 
 async def test_the_applicants_login_becomes_the_familys_login(
     client, setup, fixed_code, owner_session

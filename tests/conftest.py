@@ -87,6 +87,27 @@ def _documents_stay_local(tmp_path_factory) -> Iterator[None]:
     get_object_store.cache_clear()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _messages_are_never_really_sent() -> Iterator[None]:
+    """Tests never reach a gateway, for the same reason they never reach the
+    real bucket — and with more at stake.
+
+    .env on a development machine is configured for Beem, because the SMS has
+    to be exercised against a real handset sometimes. Without this the suite
+    would hand every message in every test to a live gateway: real credit,
+    real numbers, and the enrolment tests texting whoever happens to own the
+    number in a fixture. That is exactly what happened the first time the
+    enrolment message had a test around it.
+
+    The mock sender logs instead, which is also how a developer running the
+    admissions flow locally reads the one-time code.
+    """
+    was = settings.SMS_PROVIDER
+    settings.SMS_PROVIDER = "mock"
+    yield
+    settings.SMS_PROVIDER = was
+
+
 @pytest.fixture(autouse=True)
 async def _dispose_app_engine() -> AsyncIterator[None]:
     """Hand the application's engine back between tests.

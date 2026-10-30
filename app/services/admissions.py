@@ -69,6 +69,7 @@ from app.repositories.students import StudentRepository
 from app.repositories.users import UserRepository
 from app.services.auth import RequestContext
 from app.services.invoicing import InvoicingService
+from app.services.notifications import NotificationsService
 
 
 class AdmissionsError(Exception):
@@ -150,7 +151,9 @@ class AdmissionsService:
         users: UserRepository,
         audit: AuditRepository,
         storage: ObjectStore,
+        notifications: NotificationsService,
     ) -> None:
+        self._notifications = notifications
         self._uow = uow
         self._admissions = admissions
         self._students = students
@@ -791,8 +794,18 @@ class AdmissionsService:
             # in November signs in to pay fees in January with what they
             # already have, and the school never has two accounts for one
             # handset.
+            # Promoted on the *verified* phone, not on the one typed into the
+            # guardian step. They are usually the same number and were assumed
+            # to be, but the form does not require it: a mother can apply from
+            # her own handset and give the father's number as the contact. In
+            # that case the account that exists is hers — the one an OTP
+            # proved — and promoting the other one found no row at all, so the
+            # family came out of enrolment with no login and no way to pay.
+            #
+            # The guardian record keeps `guardian_phone`, because that is the
+            # number a payment is matched back to.
             await self._users.promote_applicant_to_guardian(
-                phone=guardian_phone,
+                phone=application.phone,
                 guardian_id=guardian.id,
                 full_name=guardian_name,
             )
@@ -826,12 +839,32 @@ class AdmissionsService:
             )
             await self._uow.commit()
 
-            return EnrolledOutcome(
-                student_id=student.id,
-                enrolment_id=enrolment.id,
-                admission_no=student.admission_no,
-                guardian_id=guardian.id,
-            )
+        # Outside the block, and after the commit, on purpose. A message
+        # cannot be rolled back: sending it inside the transaction risks
+        # telling a parent their child is enrolled and then undoing the
+        # enrolment, which is a phone call the school cannot win. This way
+        # round the record is right and a lost message can be sent again.
+        #
+        # It swallows its own failures, because by here the deposit is taken
+        # and the child is on the roll — a gateway with no credit must not
+        # turn that into a failed request the registrar retries, making a
+        # second pupil.
+        # To the verified number, for two reasons: it is the one an OTP proved
+        # a person is holding, and the message tells them to sign in with it.
+        await self._notifications.enrolment_confirmed(
+            school_id=application.school_id,
+            phone=application.phone,
+            child_first_name=student.first_name,
+            admission_no=student.admission_no,
+            student_id=student.id,
+        )
+
+        return EnrolledOutcome(
+            student_id=student.id,
+            enrolment_id=enrolment.id,
+            admission_no=student.admission_no,
+            guardian_id=guardian.id,
+        )
 
     async def _attach_deposit_to_student(
         self, application: Any, student_id: UUID, enrolment_id: UUID

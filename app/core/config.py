@@ -52,6 +52,14 @@ class Settings(BaseSettings):
     #: build the URLs the local storage adapter serves, and nothing else.
     PUBLIC_BASE_URL: str = "http://localhost:8000"
 
+    #: The host a parent is sent to in a message, bare and with no scheme —
+    #: a text pays for every character and a handset adds "https://" back by
+    #: itself. The spec puts each school on its own subdomain, and this is a
+    #: single host until the routing that would make that true exists; a
+    #: message that named a subdomain nothing resolves would be worse than a
+    #: message that names the one address that works.
+    PORTAL_HOST: str = "localhost:5173"
+
     # Documents. "local" writes to disk and serves through this API so the
     # admissions flow is runnable before R2 exists; "r2" is Cloudflare R2
     # through its S3-compatible API, which is what production uses. The bucket

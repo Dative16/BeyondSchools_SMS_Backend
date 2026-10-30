@@ -52,6 +52,7 @@ from app.services.academic import AcademicService
 from app.services.admissions import AdmissionsService
 from app.services.auth import AuthService, RequestContext
 from app.services.invoicing import InvoicingService
+from app.services.notifications import NotificationsService
 from app.services.students import StudentService
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -339,6 +340,23 @@ async def invoicing_service(session: TenantSessionDep) -> InvoicingService:
 InvoicingServiceDep = Annotated[InvoicingService, Depends(invoicing_service)]
 
 
+def _notifications(session: AsyncSession) -> NotificationsService:
+    return NotificationsService(
+        uow=SqlAlchemyUnitOfWork(session),
+        sms=get_sms_sender(),
+        schools=SqlSchoolRepository(session),
+        audit=SqlAuditRepository(session),
+    )
+
+
+async def notifications_service(session: TenantSessionDep) -> NotificationsService:
+    """What the school says to a family, scoped by the token."""
+    return _notifications(session)
+
+
+NotificationsServiceDep = Annotated[NotificationsService, Depends(notifications_service)]
+
+
 def _admissions(session: AsyncSession) -> AdmissionsService:
     return AdmissionsService(
         uow=SqlAlchemyUnitOfWork(session),
@@ -351,6 +369,7 @@ def _admissions(session: AsyncSession) -> AdmissionsService:
         users=SqlUserRepository(session),
         audit=SqlAuditRepository(session),
         storage=get_object_store(),
+        notifications=_notifications(session),
     )
 
 
