@@ -123,16 +123,65 @@ hand, and the spec itself says *"SMS as the real channel… the portal is the
 destination, not the notification."* A minimal send — enrolment invite, fee
 reminder — comes forward.
 
-### Step D — fee structure editor
+### Step D — fee structure editor — **done**
 
 **First, because it is the only gap that stops the school operating.** A new
 class level cannot be billed at all without it.
 
-- API: `GET`/`POST /fees/structures`, `PUT /structures/{id}/items`,
-  `POST /structures/{id}/publish` — all present.
 - Design: `FeeStructureEditor.dc.html`.
 - Gate: a structure is drafted for a level, its items entered, published, and
-  a term run bills it.
+  a term run bills it. Met, and covered by the suite.
+
+Two departures from the artboard, both deliberate and both written into the
+page's own docstring. Every change to an item saves immediately instead of
+behind a "Save the draft" button, because the endpoint replaces the whole item
+list in one call and so there is no partial-save hazard to protect against —
+only eleven typed amounts to lose. And the totals are given per term rather
+than as "Term 1" and "Terms 2 and 3, each", because an item pinned to one term
+makes the others unequal and one figure for both would be true of neither.
+
+**"All present" was wrong.** Two endpoints the editor cannot work without did
+not exist:
+
+- `GET /fees/structures/{id}`. The list said a structure had five items;
+  nothing said *which* five. A draft could be read back only by whoever still
+  had the create response in front of them, so closing the tab lost the work.
+  The service method existed and had never been routed.
+- `POST /fees/structures/{id}/archive`. The artboard has "Discard the draft"
+  and there was no endpoint that could. A structure started against the wrong
+  level would have sat in the list for ever, in a list whose whole job is to
+  say which levels are not ready to bill.
+
+Both now carry a headcount as well — how many children a structure would bill
+— because publishing is irreversible and a headcount is the cheapest check
+that the right level is being priced.
+
+**And it found a billing defect that predates the screen.** The initial schema
+put a unique constraint on `(academic_year_id, level_id, stream_id)` and it did
+not do what it says: PostgreSQL treats NULL as distinct in a unique index, and
+a level-wide structure has a NULL stream. So the constraint covered the
+stream-scoped case, the rare one, and left unconstrained every structure a
+school actually writes.
+
+What that costs: `published_items_by_level` keys the term run's prices by
+`(level_id, stream_id)`, so two published level-wide structures for one level
+**merge into one list of items and the whole level is billed the sum of both.**
+Nothing in the run looks wrong. The invoices are simply too big, for every
+child in a class, and the structure list shows two rows that each look correct
+on their own. The demo database already held a duplicate pair.
+
+Fixed in three places, because one was not enough:
+
+- Migration `0003` replaces the constraint with two partial unique indexes
+  that between them say the intended thing, and that exclude archived rows so
+  a discarded draft does not block the structure written to replace it. It
+  archives any existing duplicate first, keeping the published row — a
+  published structure may have invoices raised from it; a draft has billed
+  nobody.
+- `create_structure` refuses a second one with a sentence, so the screen does
+  not meet the integrity error as a 500.
+- The start dialog marks levels that are already priced and will not submit
+  against one, offering to open the existing structure instead.
 
 ### Step B — admit a child by hand
 

@@ -31,10 +31,26 @@ from app.domain.invoicing import (
     FeeCategory,
     FeeFrequency,
     FeeItem,
+    FeeStructureStatus,
     InvoiceLineKind,
 )
 from app.models.fees import FeeItem as FeeItemRow
 from app.models.fees import FeeStructure, Invoice, InvoiceLine
+
+#: The children one fee structure covers, as a scalar subquery over `s`.
+#:
+#: Written once and used twice — in the list and on its own — because the two
+#: must agree. It mirrors the term run's choice of structure exactly: a
+#: structure scoped to a stream covers only that stream, and a level-wide one
+#: covers the whole level, every stream in it included.
+_ENROLLED_UNDER = (
+    "SELECT count(*) FROM enrolment e "
+    "  JOIN class_group g ON g.id = e.class_group_id "
+    " WHERE e.academic_year_id = s.academic_year_id "
+    "   AND g.level_id = s.level_id "
+    "   AND (s.stream_id IS NULL OR g.stream_id = s.stream_id) "
+    "   AND e.outcome = 'active'"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +92,10 @@ class FeesRepository(Protocol):
         self, *, academic_year_id: UUID | None
     ) -> list[dict[str, Any]]: ...
     async def structure(self, structure_id: UUID) -> FeeStructure | None: ...
+    async def enrolled_under(self, structure_id: UUID) -> int: ...
+    async def live_structure_for(
+        self, *, academic_year_id: UUID, level_id: UUID, stream_id: UUID | None
+    ) -> FeeStructure | None: ...
     async def add_structure(self, **values: Any) -> FeeStructure: ...
     async def items_of(self, structure_id: UUID) -> list[dict[str, Any]]: ...
     async def replace_items(
@@ -287,20 +307,34 @@ class SqlFeesRepository:
         The count and total come back with the row because the settings screen
         shows them: a structure with no items is the commonest reason a term
         run finds nothing to bill.
+
+        So does the headcount, and that one is here rather than worked out on
+        the screen because publishing cannot be undone. "This will apply to 38
+        children" is the sentence that stops a bursar publishing Standard 6's
+        prices against Standard 1.
         """
         rows = await self._session.execute(
+            # The only thing concatenated in is a literal defined in this
+            # module; nothing from a request reaches the SQL, and the year is
+            # a bound parameter as it must be. Hence the suppression.
             text(
-                "SELECT s.id, s.academic_year_id, s.level_id, l.name AS level_name, "
+                "SELECT s.id, s.academic_year_id, s.level_id, l.name AS level_name, "  # noqa: S608
                 "       s.stream_id, st.name AS stream_name, s.label, "
                 "       s.status::text AS status, s.published_at, s.note, "
                 "       count(i.id) AS item_count, "
-                "       coalesce(sum(i.amount), 0) AS total_amount "
+                "       coalesce(sum(i.amount), 0) AS total_amount, "
+                "       (" + _ENROLLED_UNDER + ") AS enrolled_count "
                 "  FROM fee_structure s "
                 "  JOIN level l ON l.id = s.level_id "
                 "  LEFT JOIN stream st ON st.id = s.stream_id "
                 "  LEFT JOIN fee_item i ON i.fee_structure_id = s.id "
-                " WHERE CAST(:year AS uuid) IS NULL "
-                "    OR s.academic_year_id = CAST(:year AS uuid) "
+                # A discarded draft is gone as far as this list is
+                # concerned. The list's job is to show which levels are not
+                # ready to bill, and a draft somebody abandoned in October is
+                # not one of them.
+                " WHERE s.status <> 'archived' "
+                "   AND (CAST(:year AS uuid) IS NULL "
+                "        OR s.academic_year_id = CAST(:year AS uuid)) "
                 " GROUP BY s.id, s.academic_year_id, s.level_id, l.name, s.stream_id, "
                 "          st.name, s.label, s.status, s.published_at, s.note, "
                 "          l.order_index "
@@ -312,6 +346,43 @@ class SqlFeesRepository:
 
     async def structure(self, structure_id: UUID) -> FeeStructure | None:
         return await self._session.get(FeeStructure, structure_id)
+
+    async def live_structure_for(
+        self, *, academic_year_id: UUID, level_id: UUID, stream_id: UUID | None
+    ) -> FeeStructure | None:
+        """The structure already pricing this scope, draft or published.
+
+        What the partial unique indexes forbid a second of. Asked before one
+        is created, so the answer is a sentence rather than an integrity error
+        surfacing as a 500.
+        """
+        return (
+            await self._session.scalars(
+                select(FeeStructure)
+                .where(FeeStructure.academic_year_id == academic_year_id)
+                .where(FeeStructure.level_id == level_id)
+                .where(FeeStructure.stream_id == stream_id)
+                .where(FeeStructure.status != FeeStructureStatus.ARCHIVED)
+                .limit(1)
+            )
+        ).first()
+
+    async def enrolled_under(self, structure_id: UUID) -> int:
+        """How many children this structure would bill, were it published.
+
+        Counted the way the term run chooses a structure — the level, the
+        year, and the stream if the structure is scoped to one — so the figure
+        on the publish button is the figure the run will act on rather than a
+        second opinion about it.
+        """
+        count = await self._session.scalar(
+            text(
+                "SELECT (" + _ENROLLED_UNDER + ") "  # noqa: S608 - module literal, :id bound
+                "  FROM fee_structure s WHERE s.id = :id"
+            ),
+            {"id": structure_id},
+        )
+        return int(count or 0)
 
     async def add_structure(self, **values: Any) -> FeeStructure:
         structure = FeeStructure(**values)

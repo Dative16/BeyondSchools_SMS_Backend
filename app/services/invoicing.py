@@ -313,7 +313,14 @@ class InvoicingService:
         structure = await self._fees.structure(structure_id)
         if structure is None:
             raise NotFound("no such fee structure")
-        return {"structure": structure, "items": await self._fees.items_of(structure_id)}
+        return {
+            "structure": structure,
+            "items": await self._fees.items_of(structure_id),
+            # Carried on the detail as well as the list, because this is the
+            # response the publish screen is reading when it asks a bursar to
+            # confirm something that cannot be undone.
+            "enrolled_count": await self._fees.enrolled_under(structure_id),
+        }
 
     async def create_structure(
         self,
@@ -331,6 +338,20 @@ class InvoicingService:
         self._require(principal, Permission.FEE_STRUCTURE_MANAGE)
         if principal.school_id is None:
             raise NotFound("this account belongs to no school")
+
+        # Refused before the database refuses it, so the screen gets a
+        # sentence. Two structures for one level do not fail loudly: the term
+        # run merges their items and bills the whole level the sum of both.
+        existing = await self._fees.live_structure_for(
+            academic_year_id=academic_year_id, level_id=level_id, stream_id=stream_id
+        )
+        if existing is not None:
+            where = "this stream" if stream_id else "this level"
+            raise Invalid(
+                f"{where} already has a fee structure for the year "
+                f'("{existing.label}", {existing.status.value}). Open that one, '
+                "or discard it if it was started by mistake"
+            )
 
         async with self._uow:
             structure = await self._fees.add_structure(
@@ -452,6 +473,49 @@ class InvoicingService:
                     "items": len(items),
                     "total": str(sum(Decimal(item["amount"]) for item in items)),
                 },
+                ip=context.ip,
+                user_agent=context.user_agent,
+            )
+            await self._uow.commit()
+
+        return await self.structure_detail(principal, structure_id=structure_id)
+
+    async def archive_structure(
+        self, principal: Principal, *, structure_id: UUID, context: RequestContext
+    ) -> dict[str, Any]:
+        """Throw a draft away.
+
+        Refused once published, for the reason editing is refused: the prices
+        an invoice was raised from have to stay findable years later. A draft
+        has billed nobody, and a school that cannot discard one is left
+        reading a list of levels that are "not ready" and discovering that one
+        of them is a mistake somebody started in October.
+
+        Archived rather than deleted, so the audit trail still has something
+        to point at.
+        """
+        self._require(principal, Permission.FEE_STRUCTURE_MANAGE)
+
+        async with self._uow:
+            structure = await self._fees.structure(structure_id)
+            if structure is None:
+                raise NotFound("no such fee structure")
+            if structure.status is FeeStructureStatus.PUBLISHED:
+                raise Invalid(
+                    "a published structure cannot be discarded; invoices have been "
+                    "raised from it and must stay explainable"
+                )
+
+            structure.status = FeeStructureStatus.ARCHIVED
+
+            await self._audit.record(
+                school_id=structure.school_id,
+                action="fee_structure.archived",
+                actor_user_id=principal.user_id,
+                actor_role=principal.role.value,
+                entity_type="fee_structure",
+                entity_id=structure_id,
+                changed={"label": structure.label},
                 ip=context.ip,
                 user_agent=context.user_agent,
             )

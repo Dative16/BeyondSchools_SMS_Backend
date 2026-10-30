@@ -58,6 +58,20 @@ def _handle(exc: Exception) -> HTTPException:
     raise exc
 
 
+def _detail(detail: dict[str, Any]) -> FeeStructureDetailResponse:
+    """One shape for all four structure endpoints.
+
+    They each answer the same question — what is in this structure now — and a
+    screen that got a different shape back from publishing than from editing
+    would have to hold two readings of one thing.
+    """
+    return FeeStructureDetailResponse(
+        structure=FeeStructureResponse.model_validate(detail["structure"]),
+        items=detail["items"],
+        enrolled_count=detail["enrolled_count"],
+    )
+
+
 def _facts(row: dict[str, Any], *, is_void: bool = False) -> InvoiceFacts:
     return InvoiceFacts(
         billed=Decimal(row["billed"]),
@@ -110,10 +124,30 @@ async def create_structure(
         )
     except (NotAllowed, NotFound, Invalid) as exc:
         raise _handle(exc) from exc
-    return FeeStructureDetailResponse(
-        structure=FeeStructureResponse.model_validate(detail["structure"]),
-        items=detail["items"],
-    )
+    return _detail(detail)
+
+
+@router.get(
+    "/structures/{structure_id}",
+    response_model=FeeStructureDetailResponse,
+    summary="One fee structure and its items",
+)
+async def structure(
+    structure_id: UUID,
+    principal: PrincipalDep,
+    service: InvoicingServiceDep,
+) -> FeeStructureDetailResponse:
+    """The only way to reopen a draft.
+
+    The list says a structure has five items; this says which five. Without it
+    a half-finished draft could be read back only by whoever still had the
+    create response in front of them, so closing the tab lost the work.
+    """
+    try:
+        detail = await service.structure_detail(principal, structure_id=structure_id)
+    except (NotAllowed, NotFound) as exc:
+        raise _handle(exc) from exc
+    return _detail(detail)
 
 
 @router.put(
@@ -140,10 +174,7 @@ async def set_items(
         )
     except (NotAllowed, NotFound, Invalid) as exc:
         raise _handle(exc) from exc
-    return FeeStructureDetailResponse(
-        structure=FeeStructureResponse.model_validate(detail["structure"]),
-        items=detail["items"],
-    )
+    return _detail(detail)
 
 
 @router.post(
@@ -165,10 +196,28 @@ async def publish_structure(
         )
     except (NotAllowed, NotFound, Invalid) as exc:
         raise _handle(exc) from exc
-    return FeeStructureDetailResponse(
-        structure=FeeStructureResponse.model_validate(detail["structure"]),
-        items=detail["items"],
-    )
+    return _detail(detail)
+
+
+@router.post(
+    "/structures/{structure_id}/archive",
+    response_model=FeeStructureDetailResponse,
+    summary="Discard a draft structure",
+)
+async def archive_structure(
+    structure_id: UUID,
+    principal: PrincipalDep,
+    service: InvoicingServiceDep,
+    context: ContextDep,
+) -> FeeStructureDetailResponse:
+    """Refused once published. A draft, though, has billed nobody."""
+    try:
+        detail = await service.archive_structure(
+            principal, structure_id=structure_id, context=context
+        )
+    except (NotAllowed, NotFound, Invalid) as exc:
+        raise _handle(exc) from exc
+    return _detail(detail)
 
 
 # --------------------------------------------------------------------------

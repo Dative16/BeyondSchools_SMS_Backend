@@ -52,6 +52,10 @@ class FeeStructureRow(BaseModel):
     note: str | None
     item_count: int
     total_amount: Decimal
+    #: Children this structure would bill, were it published. On the row
+    #: because publishing is irreversible, and a headcount is the cheapest
+    #: check that the right level is being priced.
+    enrolled_count: int
 
 
 class FeeStructureCreateRequest(BaseModel):
@@ -84,6 +88,7 @@ class FeeStructureResponse(BaseModel):
 class FeeStructureDetailResponse(BaseModel):
     structure: FeeStructureResponse
     items: list[dict[str, Any]]
+    enrolled_count: int
 
 
 # --------------------------------------------------------------------------

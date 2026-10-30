@@ -53,12 +53,30 @@ class FeeStructure(UUIDPrimaryKey, TenantScoped, Timestamped, Base):
     """
 
     __tablename__ = "fee_structure"
+    #: Two partial indexes rather than one unique constraint over the three
+    #: columns, because PostgreSQL treats NULL as distinct: a plain constraint
+    #: on (year, level, stream) says nothing at all about the level-wide case,
+    #: where the stream is NULL — and that is nearly every structure a school
+    #: writes. Two level-wide structures for one level merge in the term run
+    #: and bill the whole level the sum of both. See migration 0003.
+    #:
+    #: Archived rows are outside both, so a discarded draft does not block the
+    #: structure written to replace it.
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "uq_fee_structure_level_wide",
+            "academic_year_id",
+            "level_id",
+            unique=True,
+            postgresql_where=text("stream_id IS NULL AND status <> 'archived'"),
+        ),
+        Index(
+            "uq_fee_structure_per_stream",
             "academic_year_id",
             "level_id",
             "stream_id",
-            name="uq_fee_structure_academic_year_id_level_id_stream_id",
+            unique=True,
+            postgresql_where=text("stream_id IS NOT NULL AND status <> 'archived'"),
         ),
     )
 

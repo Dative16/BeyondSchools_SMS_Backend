@@ -309,6 +309,268 @@ async def test_a_draft_can_be_edited_and_lists_its_total(client, setup, bursar) 
     assert Decimal(row["total_amount"]) == Decimal("330000.00")
 
 
+async def test_a_draft_can_be_read_back_item_by_item(client, setup, bursar) -> None:
+    """Without this a draft could be reopened only by whoever still had the
+    create response in front of them, so closing the tab lost the work."""
+    created = await client.post(
+        "/api/v1/fees/structures",
+        json={
+            "academic_year_id": str(setup["year_id"]),
+            "level_id": str(setup["level_id"]),
+            "label": "Standard 4 2027",
+            "items": [
+                {
+                    "name": "Tuition",
+                    "amount": "240000",
+                    "category": "tuition",
+                    "frequency": "per_term",
+                },
+                {
+                    "name": "Registration",
+                    "amount": "40000",
+                    "category": "admission",
+                    "frequency": "one_off",
+                },
+            ],
+        },
+        headers=bursar,
+    )
+    structure_id = created.json()["structure"]["id"]
+
+    read = await client.get(f"/api/v1/fees/structures/{structure_id}", headers=bursar)
+
+    assert read.status_code == 200, read.text
+    items = {item["name"]: item for item in read.json()["items"]}
+    assert set(items) == {"Tuition", "Registration"}
+    assert Decimal(items["Tuition"]["amount"]) == Decimal("240000.00")
+    # The frequency comes back, because it is what decides whether a line
+    # lands on a term invoice or only on the one a child joins with.
+    assert items["Registration"]["frequency"] == "one_off"
+
+
+async def test_a_structure_says_how_many_children_it_would_bill(
+    client, setup, bursar
+) -> None:
+    """The figure on an irreversible button. Two children are on the roll at
+    this level, so publishing it affects two and no more."""
+    created = await client.post(
+        "/api/v1/fees/structures",
+        json={
+            "academic_year_id": str(setup["year_id"]),
+            "level_id": str(setup["level_id"]),
+            "label": "Standard 4 2027",
+            "items": [],
+        },
+        headers=bursar,
+    )
+    structure_id = created.json()["structure"]["id"]
+    assert created.json()["enrolled_count"] == 2
+
+    # And the same number on the list, which is the other place it is read.
+    listed = await client.get("/api/v1/fees/structures", headers=bursar)
+    row = next(r for r in listed.json() if r["id"] == structure_id)
+    assert row["enrolled_count"] == 2
+
+
+async def test_a_structure_for_an_empty_level_says_nobody(client, setup, bursar) -> None:
+    """Standard 5 exists as a level and has no class group, so no child is in
+    it. Publishing prices for it is harmless and the screen should say so
+    rather than imply a run will bill somebody."""
+    created = await client.post(
+        "/api/v1/fees/structures",
+        json={
+            "academic_year_id": str(setup["year_id"]),
+            "level_id": str(setup["other_level"]),
+            "label": "Standard 5 2027",
+            "items": [],
+        },
+        headers=bursar,
+    )
+
+    assert created.json()["enrolled_count"] == 0
+
+
+async def test_one_level_cannot_be_priced_twice(client, setup, bursar) -> None:
+    """Two structures for one level bill every child in it from both.
+
+    The unique constraint on (year, level, stream) was meant to stop this and
+    did not: PostgreSQL treats NULL as distinct in a unique index, and a
+    level-wide structure has a NULL stream — so the constraint applied to the
+    stream-scoped case only, which is the rare one. Every structure a school
+    actually writes was unconstrained.
+
+    What it costs if it gets through: the term run keys published items by
+    (level, stream), so two level-wide structures merge into one list and the
+    whole level is billed the sum of both.
+    """
+    await publish_structure(client, bursar, setup)
+
+    second = await client.post(
+        "/api/v1/fees/structures",
+        json={
+            "academic_year_id": str(setup["year_id"]),
+            "level_id": str(setup["level_id"]),
+            "label": "Standard 4 2027, again",
+            "items": [
+                {
+                    "name": "Tuition",
+                    "amount": "240000",
+                    "category": "tuition",
+                    "frequency": "per_term",
+                }
+            ],
+        },
+        headers=bursar,
+    )
+
+    assert second.status_code == 422, second.text
+    assert "already" in second.json()["detail"]
+
+
+async def test_a_stream_may_still_be_priced_differently(
+    client, setup, bursar, owner_session
+) -> None:
+    """The level-wide structure and a boarders' structure are not duplicates of
+    each other. Refusing the second would take away the one thing a stream
+    scope is for."""
+    await publish_structure(client, bursar, setup)
+    stream_id = uuid4()
+    await owner_session.execute(
+        text(
+            "INSERT INTO stream (id, school_id, level_id, name, is_boarding, "
+            " created_at, updated_at) "
+            "VALUES (:id, :school, :level, 'Boarding', true, now(), now())"
+        ),
+        {"id": stream_id, "school": setup["school_id"], "level": setup["level_id"]},
+    )
+    await owner_session.commit()
+
+    scoped = await client.post(
+        "/api/v1/fees/structures",
+        json={
+            "academic_year_id": str(setup["year_id"]),
+            "level_id": str(setup["level_id"]),
+            "stream_id": str(stream_id),
+            "label": "Standard 4 boarders 2027",
+            "items": [
+                {
+                    "name": "Boarding",
+                    "amount": "450000",
+                    "category": "boarding",
+                    "frequency": "per_term",
+                }
+            ],
+        },
+        headers=bursar,
+    )
+
+    assert scoped.status_code == 201, scoped.text
+
+
+async def test_a_discarded_draft_does_not_block_a_second_attempt(
+    client, setup, bursar
+) -> None:
+    """Otherwise a bursar who started one against the wrong level could never
+    start the right one."""
+    first = await client.post(
+        "/api/v1/fees/structures",
+        json={
+            "academic_year_id": str(setup["year_id"]),
+            "level_id": str(setup["level_id"]),
+            "label": "First attempt",
+            "items": [],
+        },
+        headers=bursar,
+    )
+    await client.post(
+        f"/api/v1/fees/structures/{first.json()['structure']['id']}/archive",
+        headers=bursar,
+    )
+
+    second = await client.post(
+        "/api/v1/fees/structures",
+        json={
+            "academic_year_id": str(setup["year_id"]),
+            "level_id": str(setup["level_id"]),
+            "label": "Second attempt",
+            "items": [],
+        },
+        headers=bursar,
+    )
+
+    assert second.status_code == 201, second.text
+
+
+async def test_a_draft_can_be_discarded_and_leaves_the_list(client, setup, bursar) -> None:
+    """A level that is "not ready to bill" must mean exactly that, so a draft
+    started against the wrong level has to be removable."""
+    created = await client.post(
+        "/api/v1/fees/structures",
+        json={
+            "academic_year_id": str(setup["year_id"]),
+            "level_id": str(setup["level_id"]),
+            "label": "Started by mistake",
+            "items": [],
+        },
+        headers=bursar,
+    )
+    structure_id = created.json()["structure"]["id"]
+
+    discarded = await client.post(
+        f"/api/v1/fees/structures/{structure_id}/archive", headers=bursar
+    )
+
+    assert discarded.status_code == 200, discarded.text
+    assert discarded.json()["structure"]["status"] == "archived"
+
+    listed = await client.get("/api/v1/fees/structures", headers=bursar)
+    assert all(row["id"] != structure_id for row in listed.json())
+
+
+async def test_a_published_structure_cannot_be_discarded(client, setup, bursar) -> None:
+    """Invoices have been raised from it. A price an invoice was raised from
+    must stay findable, which is the same rule that freezes editing."""
+    structure_id = await publish_structure(client, bursar, setup)
+
+    discarded = await client.post(
+        f"/api/v1/fees/structures/{structure_id}/archive", headers=bursar
+    )
+
+    assert discarded.status_code == 422
+    assert "cannot be discarded" in discarded.json()["detail"]
+
+
+async def test_discarding_a_draft_does_not_disturb_the_run(client, setup, bursar) -> None:
+    """A draft discarded somewhere else in the school must leave the run
+    exactly as it was. It reads published rows only, so a level nobody is
+    enrolled in losing its draft changes nothing about the level that is."""
+    await publish_structure(client, bursar, setup)
+    spare = await client.post(
+        "/api/v1/fees/structures",
+        json={
+            "academic_year_id": str(setup["year_id"]),
+            "level_id": str(setup["other_level"]),
+            "label": "Standard 5, abandoned",
+            "items": [],
+        },
+        headers=bursar,
+    )
+    await client.post(
+        f"/api/v1/fees/structures/{spare.json()['structure']['id']}/archive",
+        headers=bursar,
+    )
+
+    run = await client.post(
+        f"/api/v1/fees/terms/{setup['term_id']}/run",
+        json={"dry_run": True},
+        headers=bursar,
+    )
+
+    assert run.status_code == 200, run.text
+    assert run.json()["raised"] == 2, "both children still priced"
+    assert run.json()["problems"] == []
+
+
 # --------------------------------------------------------------------------
 # The term run
 # --------------------------------------------------------------------------
