@@ -183,14 +183,63 @@ Fixed in three places, because one was not enough:
 - The start dialog marks levels that are already priced and will not submit
   against one, offering to open the existing structure instead.
 
-### Step B — admit a child by hand
+### Step B — admit a child by hand — **done**
 
-Kills the three dead buttons the same day it lands.
+The three dead `/students/new` buttons work. They were always gated on
+`student:manage` and always pointed at nothing.
 
-- API: `POST /enrolments` — present.
 - Design: `AdmitByHand.dc.html`, `AdmitByHandPhone.dc.html`.
 - Gate: a child who never used the public form is enrolled, invoiced and
-  appears on the roll.
+  appears on the roll. Met, and asserted end to end — the roll row carries the
+  class, the guardian to ring and the balance.
+
+Three steps at every width, as the phone artboard draws them, with the step in
+the URL so the browser's back button steps back through the form. The desktop
+artboard is one long page; the wizard is used for both because a registrar
+reads each answer back to a parent as they go, and the running "what this will
+create" summary beside it is the same information with less to scroll past.
+
+Unlike the public application form, every step blocks. A parent at home who
+abandons a half-filled form has still told the school their child exists; this
+form creates a pupil, an enrolment and a bill in one irreversible go.
+
+**"API: `POST /enrolments` — present" was the wrong endpoint.** It enrols a
+child who already exists and raises nothing. The counter needs the pupil
+record, the enrolment, the guardian, the link, the family's login and the term
+invoice, and it needs them to be one transaction: half of it is a child the
+roll cannot find or a bill nobody can sign in to pay, with a parent standing at
+the desk. So `POST /admissions/by-hand` does all six, and `GET
+/guardians/at-number` answers the question the form asks while the number is
+being typed.
+
+Four decisions worth keeping written down:
+
+- **The invoice is raised at admission, not left to the term run.** The run is
+  repeatable and would pick the child up — but a receipt is entered *against an
+  invoice*, and money taken at a counter with nowhere to put it is how a school
+  ends up back on a cash box and a notebook. It carries the term's charges and
+  the one-off joining items, because this path takes no deposit and the funnel
+  puts those on the deposit invoice; without them a child admitted by hand
+  would never be charged an admission fee at all.
+- **A staff account is never demoted.** A class teacher whose own child joins
+  would otherwise be turned into a guardian by the admission, losing the
+  register and the marks their job depends on. They are linked as the child's
+  guardian and keep their staff login.
+- **The guardian record on file wins on every field, name included.** That is
+  how a family's second child joins one parent rather than making two — and it
+  silently discards a name typed against a number the school already holds,
+  which is why the form warns first and says whose number it is.
+- **A full class is refused on a count read in the same transaction.** The
+  browser's list of classes with places left goes stale the moment a second
+  registrar admits somebody.
+
+**And it closed a latent 500 in the existing offer path.** Both paths that
+admit a child ask the invoicing service for a bill, and invoicing has its own
+error classes which the admissions routes do not catch. The commonest refusal —
+"this level has no published fee structure" — was therefore a 500 rather than a
+sentence. Nothing had walked into it because the public form only lists levels
+that have a structure, so only a staff offer on such a level could reach it.
+Translated at the boundary now, which fixes the offer path too.
 
 ### Step E — school setup
 

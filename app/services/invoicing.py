@@ -195,6 +195,100 @@ class InvoicingService:
             invoice=invoice, billed=billed_total(lines), lines=tuple(lines)
         )
 
+    async def raise_joining_invoice(
+        self,
+        *,
+        school_id: UUID,
+        student_id: UUID,
+        enrolment_id: UUID,
+        academic_year_id: UUID,
+        level_id: UUID,
+        stream_id: UUID | None,
+        issued_on: date,
+        actor: Principal,
+        context: RequestContext,
+    ) -> RaisedInvoice:
+        """The bill for a child admitted at the counter.
+
+        The term run is the ordinary way a child gets a bill, and it is
+        repeatable — so a child admitted in week three *would* be picked up by
+        re-running the term. Relying on that is still wrong: the registrar has
+        a family at the desk who want to pay today, and a receipt is entered
+        against an invoice. No invoice, no receipt, and money taken at a
+        counter with nowhere to put it is how a school ends up with a cash box
+        and a notebook again.
+
+        It carries the term's charges **and** the one-off joining items — the
+        admission fee, the uniform, the first set of exercise books. The
+        admissions funnel puts those on the deposit invoice; this path takes no
+        deposit, so without them a child admitted by hand would never be
+        charged an admission fee at all.
+
+        A stream-scoped structure wins over the level-wide one, the same way
+        the term run chooses.
+        """
+        term = await self._fees.current_term(academic_year_id)
+        if term is None:
+            raise Invalid(
+                "this academic year has no terms, so there is nothing to bill "
+                "against yet. Set the year's terms up first"
+            )
+
+        items = await self._fees.published_items(
+            academic_year_id=academic_year_id, level_id=level_id, stream_id=stream_id
+        )
+        if not items:
+            raise Invalid(
+                "this level has no published fee structure for the year, so this "
+                "child cannot be billed. Publish one, then raise the invoice"
+            )
+
+        lines = [
+            *lines_for_term(
+                items, term_index=term["index"], is_first_term_of_year=term["index"] == 1
+            ),
+            *lines_for_joining(items),
+        ]
+        if not lines:
+            raise Invalid("this level's fee structure charges nothing for a joining child")
+
+        sequence = await self._fees.next_invoice_sequence(
+            school_id=school_id, scope=f"{academic_year_id}-{term['index']}"
+        )
+        invoice = await self._fees.create_invoice(
+            school_id=school_id,
+            reference=f"INV/{term['label'].replace(' ', '')}/{sequence:04d}",
+            kind=InvoiceKind.TERM,
+            student_id=student_id,
+            enrolment_id=enrolment_id,
+            term_id=term["id"],
+            issued_on=issued_on,
+            due_date=due_date_for(
+                issued_on, term_starts_on=term["starts_on"], grace_days=14
+            ),
+            created_by_id=actor.user_id,
+        )
+        await self._fees.add_lines(
+            invoice_id=invoice.id, school_id=school_id, lines=lines
+        )
+
+        await self._audit.record(
+            school_id=school_id,
+            action="invoice.raised",
+            actor_user_id=actor.user_id,
+            actor_role=actor.role.value,
+            entity_type="invoice",
+            entity_id=invoice.id,
+            changed={"kind": "term", "reference": invoice.reference, "joining": True},
+            note=f"{len(lines)} line(s), {billed_total(lines)} due, admitted by hand",
+            ip=context.ip,
+            user_agent=context.user_agent,
+        )
+
+        return RaisedInvoice(
+            invoice=invoice, billed=billed_total(lines), lines=tuple(lines)
+        )
+
     async def totals(self, invoice_id: UUID) -> InvoiceTotals | None:
         return await self._fees.totals(invoice_id)
 

@@ -108,6 +108,9 @@ class UserRepository(Protocol):
     async def promote_applicant_to_guardian(
         self, *, phone: str, guardian_id: UUID, full_name: str
     ) -> UUID | None: ...
+    async def ensure_guardian_login(
+        self, *, school_id: UUID, phone: str, guardian_id: UUID, full_name: str
+    ) -> str: ...
 
     async def guardian_has_child(self, guardian_id: UUID, student_id: UUID) -> bool: ...
 
@@ -440,6 +443,66 @@ class SqlUserRepository:
         self._session.add(user)
         await self._session.flush()
         return user
+
+    async def ensure_guardian_login(
+        self, *, school_id: UUID, phone: str, guardian_id: UUID, full_name: str
+    ) -> str:
+        """Make sure this number can sign in, whatever it is already.
+
+        The application path promotes an account the parent made themselves by
+        verifying their phone. A child admitted at the counter has no such
+        account, and a family that cannot sign in cannot see a bill or pay it
+        — so one is made here, with no password, exactly as the public form
+        makes one: they sign in by one-time code to the number the school
+        already has.
+
+        Four cases, and the fourth is the one worth the length of this
+        docstring. A staff account is **left alone**. A class teacher whose own
+        child joins the school would otherwise be demoted to a guardian by
+        admitting their child, losing the register, the marks and everything
+        else their work depends on. They are linked as a guardian on the child
+        and keep their staff login; the parent portal is reached by role, and
+        that is the trade worth making over silently breaking somebody's job.
+
+        Returns what happened, for the audit note.
+        """
+        row = (
+            await self._session.execute(select(AppUser).where(AppUser.phone == phone))
+        ).scalars().first()
+
+        if row is None:
+            self._session.add(
+                AppUser(
+                    school_id=school_id,
+                    full_name=full_name,
+                    phone=phone,
+                    role=Role.GUARDIAN,
+                    guardian_id=guardian_id,
+                    is_active=True,
+                )
+            )
+            await self._session.flush()
+            return "created"
+
+        if row.role is Role.APPLICANT:
+            row.role = Role.GUARDIAN
+            row.guardian_id = guardian_id
+            row.full_name = full_name
+            await self._session.flush()
+            return "promoted"
+
+        if row.role is Role.GUARDIAN:
+            # Already a parent here. If their login was never pointed at a
+            # guardian record, point it at this one; otherwise leave it, since
+            # two guardian records on one handset is a merge and not something
+            # to do halfway through an admission.
+            if row.guardian_id is None:
+                row.guardian_id = guardian_id
+                await self._session.flush()
+                return "linked"
+            return "already a guardian"
+
+        return f"left as {row.role.value}"
 
     async def promote_applicant_to_guardian(
         self, *, phone: str, guardian_id: UUID, full_name: str

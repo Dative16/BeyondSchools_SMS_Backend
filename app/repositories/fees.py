@@ -86,6 +86,7 @@ class FeesRepository(Protocol):
     ) -> bool: ...
     async def invoice(self, invoice_id: UUID) -> Invoice | None: ...
     async def term(self, term_id: UUID) -> dict[str, Any] | None: ...
+    async def current_term(self, academic_year_id: UUID) -> dict[str, Any] | None: ...
 
     # --- fee structures ---------------------------------------------------
     async def structures(
@@ -296,6 +297,27 @@ class SqlFeesRepository:
                     "  FROM term WHERE id = :id"
                 ),
                 {"id": term_id},
+            )
+        ).one_or_none()
+        return dict(row._mapping) if row else None
+
+    async def current_term(self, academic_year_id: UUID) -> dict[str, Any] | None:
+        """The term a year is in, for a child joining part-way through it.
+
+        Falls back to the earliest term of the year when none is marked
+        current, which is the state of a year that has been set up for January
+        and not started yet — exactly when the intake desk is busiest.
+        """
+        row = (
+            await self._session.execute(
+                text(
+                    "SELECT id, academic_year_id, index, label, starts_on, ends_on, "
+                    "       is_current "
+                    "  FROM term WHERE academic_year_id = :year "
+                    " ORDER BY is_current DESC, index "
+                    " LIMIT 1"
+                ),
+                {"year": academic_year_id},
             )
         ).one_or_none()
         return dict(row._mapping) if row else None

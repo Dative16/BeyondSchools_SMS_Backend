@@ -628,6 +628,26 @@ class StudentService:
         self._require(principal, Permission.STUDENT_READ)
         return await self._guardians.search(q, limit=limit, offset=offset)
 
+    async def guardian_by_phone(
+        self, principal: Principal, *, phone: str
+    ) -> tuple[Any, list[Any]] | None:
+        """Who already uses this number here, and which children are theirs.
+
+        Asked by the counter admission form before it submits. It matters
+        because the admission matches a guardian on phone and the existing
+        record wins — so a registrar typing a slightly different spelling of
+        a name already on file would otherwise watch their version vanish,
+        with nothing on screen to say why. Better to show them whose number
+        it is and let them say "yes, same parent".
+
+        Returns None when the number is new, which is the ordinary answer.
+        """
+        self._require(principal, Permission.STUDENT_READ)
+        guardian = await self._guardians.by_phone(phone)
+        if guardian is None:
+            return None
+        return guardian, await self._guardians.children(guardian.id)
+
     async def my_children(self, principal: Principal) -> list[Any]:
         """The parent portal's landing screen.
 

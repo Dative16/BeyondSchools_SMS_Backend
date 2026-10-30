@@ -7,7 +7,7 @@ a state machine, and the tests around it are mostly about what it refuses.
 """
 
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -979,3 +979,395 @@ async def test_a_form_says_separately_what_it_needs_and_what_the_school_wants(
 
     sent = await client.post("/api/v1/apply/me/submit", headers=parent)
     assert sent.status_code == 200, sent.text
+
+# --------------------------------------------------------------------------
+# Admitting at the counter
+# --------------------------------------------------------------------------
+BY_HAND = "/api/v1/admissions/by-hand"
+
+
+def _body(setup, **over):
+    body = {
+        "child": {
+            "first_name": "Glory",
+            "surname": "Mwakalebela",
+            "date_of_birth": "2020-04-11",
+            "sex": "f",
+        },
+        "class_group_id": str(setup["class_group_id"]),
+        "guardian": {
+            "full_name": "Asha Mwanjala",
+            "phone": "0712445109",
+            "relationship": "mother",
+        },
+    }
+    body.update(over)
+    return body
+
+
+async def test_a_family_at_the_counter_leaves_with_everything_they_need(
+    client, setup, owner_session
+) -> None:
+    """Six things, and the family cannot leave the room without any of them:
+    the pupil, the enrolment, the guardian, the link, a login, and a bill."""
+    admin = await staff_token(client, email=setup["admin_email"], subdomain=setup["subdomain"])
+
+    response = await client.post(BY_HAND, json=_body(setup), headers=admin)
+
+    assert response.status_code == 201, response.text
+    out = response.json()
+    assert out["class_name"] == "Standard 1 Blue"
+    assert out["admission_no"], "read out to the family at the desk"
+    assert out["guardian_existed"] is False
+    assert out["login"] == "created"
+    # Tuition 300,000 for the term, plus the one-off admission fee and uniform
+    # that the funnel would have put on a deposit invoice. Without them a
+    # child admitted by hand would never be charged an admission fee at all.
+    assert Decimal(out["billed"]) == Decimal("475000.00")
+
+    enrolled = (
+        await owner_session.execute(
+            text(
+                "SELECT s.status, s.admission_no, e.outcome, e.class_group_id "
+                "  FROM student s JOIN enrolment e ON e.student_id = s.id "
+                " WHERE s.id = :id"
+            ),
+            {"id": out["student_id"]},
+        )
+    ).mappings().one()
+    assert enrolled["status"] == "active"
+    assert enrolled["outcome"] == "active"
+    assert enrolled["class_group_id"] == UUID(str(setup["class_group_id"]))
+
+    link = (
+        await owner_session.execute(
+            text(
+                "SELECT relationship, is_primary, receives_invoices "
+                "  FROM guardian_student WHERE student_id = :id"
+            ),
+            {"id": out["student_id"]},
+        )
+    ).mappings().one()
+    assert link["relationship"] == "mother"
+    assert link["is_primary"] is True
+    assert link["receives_invoices"] is True, "somebody has to get the bill"
+
+    login = (
+        await owner_session.execute(
+            text("SELECT role, guardian_id FROM app_user WHERE phone = :phone"),
+            {"phone": "0712445109"},
+        )
+    ).mappings().one()
+    assert login["role"] == "guardian"
+    assert login["guardian_id"] == UUID(out["guardian_id"]), "the login points at the family"
+
+    told = (
+        await owner_session.execute(
+            text(
+                "SELECT note FROM audit_event WHERE school_id = :school "
+                "   AND action = 'notification.enrolment_confirmed'"
+            ),
+            {"school": setup["school_id"]},
+        )
+    ).mappings().all()
+    assert len(told) == 1
+    assert "0712445109" in told[0]["note"]
+
+    # And they are on the roll, which is the screen the school actually works
+    # from. A child in the database but not in this list is a child nobody
+    # marks a register for.
+    roll = await client.get(
+        "/api/v1/students", params={"q": out["admission_no"]}, headers=admin
+    )
+    assert roll.status_code == 200, roll.text
+    rows = roll.json()["items"]
+    assert len(rows) == 1
+    assert rows[0]["first_name"] == "Glory"
+    assert rows[0]["class_name"] == "Standard 1 Blue"
+    assert rows[0]["primary_guardian"] == "Asha Mwanjala"
+    assert rows[0]["primary_guardian_phone"] == "0712445109", "who the bursar rings"
+    assert Decimal(rows[0]["balance"]) == Decimal("475000.00"), "and what they owe"
+
+    # The invoice is openable, because a receipt is entered against it.
+    bill = await client.get(f"/api/v1/fees/invoices/{out['invoice_id']}", headers=admin)
+    assert bill.status_code == 200, bill.text
+    items = {line["item"] for line in bill.json()["lines"]}
+    assert items == {"Tuition", "Admission fee", "Uniform set"}
+
+
+async def test_a_second_child_joins_the_guardian_the_first_one_made(
+    client, setup, owner_session
+) -> None:
+    """One parent, two children — not two parent records with one number
+    between them, which is how a school ends up sending two of every SMS and
+    showing half a balance."""
+    admin = await staff_token(client, email=setup["admin_email"], subdomain=setup["subdomain"])
+
+    first = await client.post(BY_HAND, json=_body(setup), headers=admin)
+    second = await client.post(
+        BY_HAND,
+        json=_body(
+            setup,
+            child={
+                "first_name": "Baraka",
+                "surname": "Mwakalebela",
+                "date_of_birth": "2018-09-02",
+                "sex": "m",
+            },
+        ),
+        headers=admin,
+    )
+
+    assert second.status_code == 201, second.text
+    assert second.json()["guardian_existed"] is True
+    assert second.json()["guardian_id"] == first.json()["guardian_id"]
+
+    count = await owner_session.scalar(
+        text("SELECT count(*) FROM guardian WHERE phone = :phone"), {"phone": "0712445109"}
+    )
+    assert count == 1
+    links = await owner_session.scalar(
+        text(
+            "SELECT count(*) FROM guardian_student WHERE guardian_id = :id"
+        ),
+        {"id": first.json()["guardian_id"]},
+    )
+    assert links == 2
+
+
+async def test_the_name_typed_for_a_number_already_on_file_is_not_used(
+    client, setup, owner_session
+) -> None:
+    """The record on file wins, which is why the form warns first.
+
+    Worth a test of its own because it is a silent discard: nothing fails, and
+    the registrar would have no way of knowing their spelling went nowhere.
+    """
+    admin = await staff_token(client, email=setup["admin_email"], subdomain=setup["subdomain"])
+    await client.post(BY_HAND, json=_body(setup), headers=admin)
+
+    await client.post(
+        BY_HAND,
+        json=_body(
+            setup,
+            child={
+                "first_name": "Baraka",
+                "surname": "Mwakalebela",
+                "date_of_birth": "2018-09-02",
+                "sex": "m",
+            },
+            guardian={
+                "full_name": "A. MWANJALA",
+                "phone": "0712445109",
+                "relationship": "mother",
+            },
+        ),
+        headers=admin,
+    )
+
+    name = await owner_session.scalar(
+        text("SELECT full_name FROM guardian WHERE phone = :phone"), {"phone": "0712445109"}
+    )
+    assert name == "Asha Mwanjala", "the first spelling the family gave is kept"
+
+
+async def test_a_full_class_is_refused_by_name(client, setup, owner_session) -> None:
+    """The browser's list of classes with places left goes stale the moment a
+    second registrar admits somebody. The count that decides is read in the
+    same transaction as the enrolment."""
+    await owner_session.execute(
+        text("UPDATE class_group SET capacity = 1 WHERE id = :id"),
+        {"id": setup["class_group_id"]},
+    )
+    await owner_session.commit()
+    admin = await staff_token(client, email=setup["admin_email"], subdomain=setup["subdomain"])
+
+    first = await client.post(BY_HAND, json=_body(setup), headers=admin)
+    assert first.status_code == 201, first.text
+
+    second = await client.post(
+        BY_HAND,
+        json=_body(
+            setup,
+            child={
+                "first_name": "Baraka",
+                "surname": "Juma",
+                "date_of_birth": "2018-09-02",
+                "sex": "m",
+            },
+            guardian={
+                "full_name": "Juma Ally",
+                "phone": "0754118902",
+                "relationship": "father",
+            },
+        ),
+        headers=admin,
+    )
+
+    assert second.status_code == 422
+    assert "Standard 1 Blue is full" in second.json()["detail"]
+
+
+async def test_a_level_with_no_published_fees_admits_nobody_and_leaves_nothing(
+    client, setup, owner_session
+) -> None:
+    """The atomicity test, and the one that matters most.
+
+    A level with no published structure cannot be billed, so the admission is
+    refused — and the pupil record, the guardian and the enrolment created on
+    the way to finding that out must all be gone. A child on the roll with no
+    bill is invisible to every fee screen the school has.
+    """
+    level_id = await make_level(
+        owner_session, school_id=setup["school_id"], code="STD2", name="Standard 2", order_index=2
+    )
+    group_id = await make_class_group(
+        owner_session,
+        school_id=setup["school_id"],
+        academic_year_id=setup["year_id"],
+        level_id=level_id,
+        name="Standard 2 Blue",
+    )
+    await owner_session.commit()
+    admin = await staff_token(client, email=setup["admin_email"], subdomain=setup["subdomain"])
+
+    response = await client.post(
+        BY_HAND, json=_body(setup, class_group_id=str(group_id)), headers=admin
+    )
+
+    assert response.status_code == 422
+    assert "no published fee structure" in response.json()["detail"]
+
+    assert (
+        await owner_session.scalar(
+            text("SELECT count(*) FROM student WHERE school_id = :s"),
+            {"s": setup["school_id"]},
+        )
+        == 0
+    ), "no half-admitted pupil"
+    assert (
+        await owner_session.scalar(
+            text("SELECT count(*) FROM guardian WHERE school_id = :s"),
+            {"s": setup["school_id"]},
+        )
+        == 0
+    ), "no guardian with no children"
+    assert (
+        await owner_session.scalar(
+            text("SELECT count(*) FROM app_user WHERE phone = :p"), {"p": "0712445109"}
+        )
+        == 0
+    ), "no login for a family that was not admitted"
+
+
+async def test_a_teachers_own_child_does_not_cost_them_their_account(
+    client, setup, owner_session
+) -> None:
+    """A class teacher whose child joins the school would otherwise be
+    demoted to a guardian by the admission, losing the register and the marks
+    their job depends on. They are linked as the child's guardian and keep
+    their staff login."""
+    await owner_session.execute(
+        text("UPDATE app_user SET phone = :phone WHERE email = :email"),
+        {"phone": "0754118902", "email": setup["teacher_email"]},
+    )
+    await owner_session.commit()
+    admin = await staff_token(client, email=setup["admin_email"], subdomain=setup["subdomain"])
+
+    response = await client.post(
+        BY_HAND,
+        json=_body(
+            setup,
+            guardian={
+                "full_name": "Grace Kessy",
+                "phone": "0754118902",
+                "relationship": "mother",
+            },
+        ),
+        headers=admin,
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["login"] == "left as class_teacher"
+
+    role = await owner_session.scalar(
+        text("SELECT role FROM app_user WHERE email = :email"),
+        {"email": setup["teacher_email"]},
+    )
+    assert role == "class_teacher", "still has their job"
+
+    # And the child is still theirs: the link is what the parent portal reads.
+    linked = await owner_session.scalar(
+        text(
+            "SELECT count(*) FROM guardian_student gs JOIN guardian g ON g.id = gs.guardian_id "
+            " WHERE g.phone = :phone"
+        ),
+        {"phone": "0754118902"},
+    )
+    assert linked == 1
+
+
+async def test_the_number_already_on_file_is_shown_before_submitting(
+    client, setup, owner_session
+) -> None:
+    """Whose number it is, and which children are theirs — enough for the
+    registrar to ask the person in front of them whether it is the same
+    family."""
+    admin = await staff_token(client, email=setup["admin_email"], subdomain=setup["subdomain"])
+    await client.post(BY_HAND, json=_body(setup), headers=admin)
+
+    found = await client.get(
+        "/api/v1/guardians/at-number", params={"phone": "0712 445 109"}, headers=admin
+    )
+
+    assert found.status_code == 200, found.text
+    body = found.json()
+    assert body is not None, "spacing in a typed number must not hide a match"
+    assert body["guardian"]["full_name"] == "Asha Mwanjala"
+    assert [child["full_name"] for child in body["children"]] == ["Glory Mwakalebela"]
+    assert body["children"][0]["class_name"] == "Standard 1 Blue"
+
+
+async def test_a_number_nobody_uses_comes_back_empty(client, setup) -> None:
+    """The ordinary answer, and it must not be an error: most numbers typed at
+    an intake desk are new."""
+    admin = await staff_token(client, email=setup["admin_email"], subdomain=setup["subdomain"])
+
+    found = await client.get(
+        "/api/v1/guardians/at-number", params={"phone": "0689000111"}, headers=admin
+    )
+
+    assert found.status_code == 200
+    assert found.json() is None
+
+
+async def test_a_teacher_cannot_admit_a_child(client, setup) -> None:
+    teacher = await staff_token(
+        client, email=setup["teacher_email"], subdomain=setup["subdomain"]
+    )
+
+    response = await client.post(BY_HAND, json=_body(setup), headers=teacher)
+
+    assert response.status_code == 403
+
+
+async def test_a_birth_date_that_cannot_be_right_is_refused(client, setup) -> None:
+    """A child born next year reaches every report, class list and age-banded
+    fee the school ever produces."""
+    admin = await staff_token(client, email=setup["admin_email"], subdomain=setup["subdomain"])
+
+    response = await client.post(
+        BY_HAND,
+        json=_body(
+            setup,
+            child={
+                "first_name": "Glory",
+                "surname": "Mwakalebela",
+                "date_of_birth": "2099-04-11",
+                "sex": "f",
+            },
+        ),
+        headers=admin,
+    )
+
+    assert response.status_code == 422

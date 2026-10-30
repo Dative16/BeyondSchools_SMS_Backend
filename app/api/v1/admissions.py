@@ -19,6 +19,8 @@ from app.api.deps import AdmissionsServiceDep, InvoicingServiceDep, PrincipalDep
 from app.domain.admissions import offer_has_lapsed
 from app.domain.payments import Channel
 from app.schemas.admission import (
+    AdmitByHandRequest,
+    AdmittedResponse,
     ApplicationDetailResponse,
     ApplicationResponse,
     ApplyChecklistItem,
@@ -291,6 +293,55 @@ async def record_deposit(
         settled=totals.settled if totals else Decimal(0),
         balance=totals.balance if totals else Decimal(0),
         application_state=moved.state,
+    )
+
+
+@router.post(
+    "/by-hand",
+    response_model=AdmittedResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Admit a child at the counter",
+)
+async def admit_by_hand(
+    body: AdmitByHandRequest,
+    principal: PrincipalDep,
+    service: AdmissionsServiceDep,
+    context: ContextDep,
+) -> AdmittedResponse:
+    """For a family at the office who did not use the public form.
+
+    One transaction: the pupil record, the enrolment, the guardian, the
+    family's login and this term's invoice. Half of it is a child the roll
+    cannot find or a bill nobody can sign in to pay, and there is a parent
+    standing at the desk.
+
+    Declared before `/{application_id}/enrol` so that "by-hand" is read as
+    itself rather than as an application id.
+    """
+    try:
+        outcome = await service.admit_by_hand(
+            principal,
+            child=body.child.model_dump(),
+            class_group_id=body.class_group_id,
+            residency=body.residency,
+            guardian=body.guardian.model_dump(),
+            enrolled_on=body.enrolled_on,
+            context=context,
+        )
+    except (NotAllowed, NotFound, Invalid) as exc:
+        raise _handle(exc) from exc
+
+    return AdmittedResponse(
+        student_id=outcome.student_id,
+        enrolment_id=outcome.enrolment_id,
+        admission_no=outcome.admission_no,
+        class_name=outcome.class_name,
+        guardian_id=outcome.guardian_id,
+        guardian_existed=outcome.guardian_existed,
+        login=outcome.login,
+        invoice_id=outcome.invoice_id,
+        invoice_reference=outcome.invoice_reference,
+        billed=outcome.billed,
     )
 
 

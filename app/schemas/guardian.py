@@ -93,3 +93,16 @@ class GuardianChildResponse(BaseModel):
     billed: Decimal
     settled: Decimal
     balance: Decimal
+
+
+class GuardianAtThisNumber(BaseModel):
+    """Who already uses a phone number, for the counter admission form.
+
+    Their children come with them, named and with their classes, because
+    "this number is already on a pupil's record" is not useful on its own —
+    the registrar needs to see *whose*, to ask the person in front of them
+    whether it is the same family.
+    """
+
+    guardian: GuardianResponse
+    children: list[GuardianChildResponse]

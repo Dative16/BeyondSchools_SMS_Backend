@@ -272,6 +272,102 @@ class EnrolledResponse(BaseModel):
     guardian_id: UUID
 
 
+class AdmitChild(BaseModel):
+    """The child, as the counter form asks for them.
+
+    The same fields as `StudentCreateRequest` and the same birth-date rule,
+    deliberately not inherited: that model also accepts `admission_year`, and
+    an admission number's year comes from the class being admitted into, not
+    from anything a form may send.
+    """
+
+    first_name: str = Field(min_length=1, max_length=64)
+    middle_name: str | None = Field(default=None, max_length=64)
+    surname: str = Field(min_length=1, max_length=64)
+    date_of_birth: date
+    sex: Literal["f", "m"]
+    nationality: str = Field(default="Tanzanian", max_length=48)
+    birth_certificate_no: str | None = Field(default=None, max_length=64)
+    previous_school: str | None = Field(default=None, max_length=160)
+
+    @field_validator("date_of_birth")
+    @classmethod
+    def _plausible_birth(cls, value: date) -> date:
+        from app.domain.enrolment import date_of_birth_problem
+
+        problem = date_of_birth_problem(value, today=date.today())
+        if problem:
+            raise ValueError(problem)
+        return value
+
+
+class AdmitGuardian(BaseModel):
+    """One guardian is enough to start.
+
+    This person receives the invoices and the SMS, and the phone number is how
+    they sign in — so it is checked here the same way the public form checks
+    the number it sends a code to. Others are linked later from the pupil
+    record.
+    """
+
+    full_name: str = Field(min_length=1, max_length=120)
+    phone: str = Field(min_length=9, max_length=20)
+    relationship: Relationship = Relationship.OTHER
+    national_id: str | None = Field(default=None, max_length=32)
+
+    @field_validator("phone")
+    @classmethod
+    def normalise(cls, value: str) -> str:
+        from app.domain.admissions import normalise_phone
+
+        phone = normalise_phone(value)
+        if len(phone) != 10 or not phone.startswith("0"):
+            raise ValueError("that does not look like a Tanzanian mobile number")
+        return phone
+
+
+class AdmitByHandRequest(BaseModel):
+    """A family at the counter who never used the public form.
+
+    The academic year is not asked for. It is the year the chosen class
+    belongs to, which is the only answer that can be right — a class and a
+    year that disagreed would put a child on a roll nobody is looking at.
+    """
+
+    child: AdmitChild
+    class_group_id: UUID
+    residency: Residency = Residency.DAY
+    guardian: AdmitGuardian
+    #: Defaults to today. Set it for a child who started last Monday and is
+    #: being entered now, which is the ordinary case at a busy intake.
+    enrolled_on: date | None = None
+
+
+class AdmittedResponse(BaseModel):
+    """Everything the admission created, named.
+
+    The registrar reads the admission number out to the family and opens the
+    invoice if they are paying today, so both come back rather than leaving
+    the screen to go looking.
+    """
+
+    student_id: UUID
+    enrolment_id: UUID
+    admission_no: str
+    class_name: str
+    guardian_id: UUID
+    #: True when the phone number was already a guardian here. The screen says
+    #: so, because it means the name typed in was not used.
+    guardian_existed: bool
+    #: What happened to the family's login: created, promoted from an
+    #: applicant, or left alone because that number belongs to a staff
+    #: account.
+    login: str
+    invoice_id: UUID
+    invoice_reference: str
+    billed: Decimal
+
+
 class FunnelResponse(BaseModel):
     """What the dashboard draws.
 

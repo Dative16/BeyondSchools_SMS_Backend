@@ -3710,6 +3710,75 @@
         }
       }
     },
+    "/api/v1/guardians/at-number": {
+      "get": {
+        "tags": [
+          "guardians"
+        ],
+        "summary": "Who already uses this phone number",
+        "description": "Null when the number is new, which is the ordinary answer.\n\nAsked by the counter admission form before it submits. The admission\nmatches a guardian on phone and the record already on file wins on every\nfield, name included \u2014 so without this a registrar could type a different\nspelling of a name the school already holds and never be told their\nversion was dropped.\n\nDeclared before the list route for the same reason the by-hand admission\nis declared before the application one: a fixed path must not be read as\na parameter.",
+        "operationId": "guardian_at_number_api_v1_guardians_at_number_get",
+        "parameters": [
+          {
+            "name": "phone",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 9,
+              "maxLength": 20,
+              "title": "Phone"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/GuardianAtThisNumber"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Guardian At Number Api V1 Guardians At Number Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/guardians": {
       "get": {
         "tags": [
@@ -4718,6 +4787,66 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ManualPaymentResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admissions/by-hand": {
+      "post": {
+        "tags": [
+          "admissions"
+        ],
+        "summary": "Admit a child at the counter",
+        "description": "For a family at the office who did not use the public form.\n\nOne transaction: the pupil record, the enrolment, the guardian, the\nfamily's login and this term's invoice. Half of it is a child the roll\ncannot find or a bill nobody can sign in to pay, and there is a parent\nstanding at the desk.\n\nDeclared before `/{application_id}/enrol` so that \"by-hand\" is read as\nitself rather than as an application id.",
+        "operationId": "admit_by_hand_api_v1_admissions_by_hand_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdmitByHandRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdmittedResponse"
                 }
               }
             }
@@ -6199,6 +6328,227 @@
           "is_closed"
         ],
         "title": "AcademicYearResponse"
+      },
+      "AdmitByHandRequest": {
+        "properties": {
+          "child": {
+            "$ref": "#/components/schemas/AdmitChild"
+          },
+          "class_group_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Class Group Id"
+          },
+          "residency": {
+            "$ref": "#/components/schemas/Residency",
+            "default": "day"
+          },
+          "guardian": {
+            "$ref": "#/components/schemas/AdmitGuardian"
+          },
+          "enrolled_on": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enrolled On"
+          }
+        },
+        "type": "object",
+        "required": [
+          "child",
+          "class_group_id",
+          "guardian"
+        ],
+        "title": "AdmitByHandRequest",
+        "description": "A family at the counter who never used the public form.\n\nThe academic year is not asked for. It is the year the chosen class\nbelongs to, which is the only answer that can be right \u2014 a class and a\nyear that disagreed would put a child on a roll nobody is looking at."
+      },
+      "AdmitChild": {
+        "properties": {
+          "first_name": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "First Name"
+          },
+          "middle_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Middle Name"
+          },
+          "surname": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Surname"
+          },
+          "date_of_birth": {
+            "type": "string",
+            "format": "date",
+            "title": "Date Of Birth"
+          },
+          "sex": {
+            "type": "string",
+            "enum": [
+              "f",
+              "m"
+            ],
+            "title": "Sex"
+          },
+          "nationality": {
+            "type": "string",
+            "maxLength": 48,
+            "title": "Nationality",
+            "default": "Tanzanian"
+          },
+          "birth_certificate_no": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Birth Certificate No"
+          },
+          "previous_school": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 160
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous School"
+          }
+        },
+        "type": "object",
+        "required": [
+          "first_name",
+          "surname",
+          "date_of_birth",
+          "sex"
+        ],
+        "title": "AdmitChild",
+        "description": "The child, as the counter form asks for them.\n\nThe same fields as `StudentCreateRequest` and the same birth-date rule,\ndeliberately not inherited: that model also accepts `admission_year`, and\nan admission number's year comes from the class being admitted into, not\nfrom anything a form may send."
+      },
+      "AdmitGuardian": {
+        "properties": {
+          "full_name": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Full Name"
+          },
+          "phone": {
+            "type": "string",
+            "maxLength": 20,
+            "minLength": 9,
+            "title": "Phone"
+          },
+          "relationship": {
+            "$ref": "#/components/schemas/Relationship",
+            "default": "other"
+          },
+          "national_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "National Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "full_name",
+          "phone"
+        ],
+        "title": "AdmitGuardian",
+        "description": "One guardian is enough to start.\n\nThis person receives the invoices and the SMS, and the phone number is how\nthey sign in \u2014 so it is checked here the same way the public form checks\nthe number it sends a code to. Others are linked later from the pupil\nrecord."
+      },
+      "AdmittedResponse": {
+        "properties": {
+          "student_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Student Id"
+          },
+          "enrolment_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Enrolment Id"
+          },
+          "admission_no": {
+            "type": "string",
+            "title": "Admission No"
+          },
+          "class_name": {
+            "type": "string",
+            "title": "Class Name"
+          },
+          "guardian_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Guardian Id"
+          },
+          "guardian_existed": {
+            "type": "boolean",
+            "title": "Guardian Existed"
+          },
+          "login": {
+            "type": "string",
+            "title": "Login"
+          },
+          "invoice_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Invoice Id"
+          },
+          "invoice_reference": {
+            "type": "string",
+            "title": "Invoice Reference"
+          },
+          "billed": {
+            "type": "string",
+            "title": "Billed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "student_id",
+          "enrolment_id",
+          "admission_no",
+          "class_name",
+          "guardian_id",
+          "guardian_existed",
+          "login",
+          "invoice_id",
+          "invoice_reference",
+          "billed"
+        ],
+        "title": "AdmittedResponse",
+        "description": "Everything the admission created, named.\n\nThe registrar reads the admission number out to the family and opens the\ninvoice if they are paying today, so both come back rather than leaving\nthe screen to go looking."
       },
       "ApplicationDetailResponse": {
         "properties": {
@@ -8794,6 +9144,27 @@
         "type": "object",
         "title": "FunnelResponse",
         "description": "What the dashboard draws.\n\nA deposit payment is what converts an application into an enrolment, which\nis why the step between offered and enrolled is the one worth watching."
+      },
+      "GuardianAtThisNumber": {
+        "properties": {
+          "guardian": {
+            "$ref": "#/components/schemas/GuardianResponse"
+          },
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/GuardianChildResponse"
+            },
+            "type": "array",
+            "title": "Children"
+          }
+        },
+        "type": "object",
+        "required": [
+          "guardian",
+          "children"
+        ],
+        "title": "GuardianAtThisNumber",
+        "description": "Who already uses a phone number, for the counter admission form.\n\nTheir children come with them, named and with their classes, because\n\"this number is already on a pupil's record\" is not useful on its own \u2014\nthe registrar needs to see *whose*, to ask the person in front of them\nwhether it is the same family."
       },
       "GuardianChildResponse": {
         "properties": {

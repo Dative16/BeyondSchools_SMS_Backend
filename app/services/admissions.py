@@ -15,6 +15,8 @@ request: there is no id for them to change.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -68,7 +70,10 @@ from app.repositories.schools import SchoolRepository, SqlRegistrationSettingsRe
 from app.repositories.students import StudentRepository
 from app.repositories.users import UserRepository
 from app.services.auth import RequestContext
+from app.services.invoicing import Invalid as InvoicingInvalid
 from app.services.invoicing import InvoicingService
+from app.services.invoicing import NotAllowed as InvoicingNotAllowed
+from app.services.invoicing import NotFound as InvoicingNotFound
 from app.services.notifications import NotificationsService
 
 
@@ -88,6 +93,26 @@ class NotFound(AdmissionsError):
 
 class Invalid(AdmissionsError):
     """The move does not make sense, or something is missing."""
+
+
+@contextmanager
+def _as_admissions_error() -> Iterator[None]:
+    """Invoicing has its own error classes, and these routes do not catch them.
+
+    Both paths that admit a child ask the invoicing service for a bill, and
+    the commonest refusal it gives — "this level has no published fee
+    structure" — is a sentence a registrar needs to read, not a 500. Without
+    this it was one: the public form only lists levels that have a structure,
+    so the offer path had the same hole and nothing had walked into it yet.
+    """
+    try:
+        yield
+    except InvoicingNotAllowed as exc:
+        raise NotAllowed(exc.reason) from exc
+    except InvoicingNotFound as exc:
+        raise NotFound(exc.reason) from exc
+    except InvoicingInvalid as exc:
+        raise Invalid(exc.reason) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +161,27 @@ class EnrolledOutcome:
     enrolment_id: UUID
     admission_no: str
     guardian_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class AdmittedOutcome:
+    """What a counter admission produced, so the screen can say it back.
+
+    Everything it created, named. A registrar who has just typed a family in
+    needs to read the admission number out to them and open the invoice, and
+    a screen that only says "done" sends them hunting through the roll.
+    """
+
+    student_id: UUID
+    enrolment_id: UUID
+    admission_no: str
+    class_name: str
+    guardian_id: UUID
+    guardian_existed: bool
+    login: str
+    invoice_id: UUID
+    invoice_reference: str
+    billed: Decimal
 
 
 class AdmissionsService:
@@ -567,20 +613,21 @@ class AdmissionsService:
             except ValueError as exc:
                 raise Invalid(str(exc)) from exc
 
-            raised = await self._invoicing.raise_deposit_invoice(
-                school_id=school.id,
-                application_id=application.id,
-                academic_year_id=year["id"],
-                level_id=application.level_applied_id,
-                term_id=term["id"] if term else None,
-                term_index=term["index"] if term else 1,
-                year_label=year["label"],
-                deposit_percent=school.deposit_percent,
-                grace_days=school.invoice_grace_days,
-                issued_on=date.today(),
-                actor=principal,
-                context=context,
-            )
+            with _as_admissions_error():
+                raised = await self._invoicing.raise_deposit_invoice(
+                    school_id=school.id,
+                    application_id=application.id,
+                    academic_year_id=year["id"],
+                    level_id=application.level_applied_id,
+                    term_id=term["id"] if term else None,
+                    term_index=term["index"] if term else 1,
+                    year_label=year["label"],
+                    deposit_percent=school.deposit_percent,
+                    grace_days=school.invoice_grace_days,
+                    issued_on=date.today(),
+                    actor=principal,
+                    context=context,
+                )
 
             application.deposit_invoice_id = raised.invoice.id
             application.deposit_due = raised.billed
@@ -864,6 +911,194 @@ class AdmissionsService:
             enrolment_id=enrolment.id,
             admission_no=student.admission_no,
             guardian_id=guardian.id,
+        )
+
+    async def admit_by_hand(
+        self,
+        principal: Principal,
+        *,
+        child: dict[str, Any],
+        class_group_id: UUID,
+        residency: Residency,
+        guardian: dict[str, Any],
+        enrolled_on: date | None,
+        context: RequestContext,
+    ) -> AdmittedOutcome:
+        """A family at the office counter who never used the public form.
+
+        One transaction, for the same reason the funnel's enrolment is one:
+        half of this is a pupil the roll cannot find, a guardian with no
+        children, or a child with a bill nobody can sign in to pay. There is
+        a parent standing at the desk, and "it half worked" is not something
+        a registrar can explain to them.
+
+        Six things are created, and every one of them is needed before the
+        family leaves the room:
+
+        - the pupil record, with an admission number from the locked sequence;
+        - the enrolment, in a class checked for a place in this transaction
+          rather than in whatever list the browser last loaded;
+        - the guardian, matched on phone so a family's second child joins the
+          record the first one made rather than making a second parent;
+        - the link, primary and set to receive invoices, because somebody has
+          to be the person the school rings;
+        - a login for that phone number, so the family can see the bill;
+        - the term invoice, so a receipt has somewhere to go if they are
+          paying today.
+
+        No deposit is taken. The funnel's deposit exists to hold a place
+        against an offer; a child being admitted at the counter is not holding
+        a place, they are taking one.
+        """
+        self._require(principal, Permission.STUDENT_MANAGE)
+        if principal.school_id is None:
+            raise NotFound("this account belongs to no school")
+
+        guardian_name = str(guardian.get("full_name") or "").strip()
+        guardian_phone = str(guardian.get("phone") or "").strip()
+        if not (guardian_name and guardian_phone):
+            raise Invalid("the guardian's name and phone are needed")
+
+        async with self._uow:
+            school = await self._schools.get(principal.school_id)
+            if school is None:
+                raise NotFound("no such school")
+
+            klass = await self._students.class_group_place(class_group_id)
+            if klass is None:
+                raise NotFound("no such class")
+            if klass["school_id"] != school.id:
+                raise NotFound("no such class")
+            if klass["capacity"] and klass["pupils"] >= klass["capacity"]:
+                raise Invalid(
+                    f"{klass['name']} is full ({klass['pupils']} of "
+                    f"{klass['capacity']}). Raise its capacity under Classes, or "
+                    "choose another class"
+                )
+
+            year = await self._admissions.academic_year(klass["academic_year_id"])
+            if year is None:
+                raise NotFound("that class belongs to no academic year")
+            if year.get("is_closed"):
+                raise Invalid(
+                    f"{year['label']} is closed, so nobody can be admitted into it"
+                )
+
+            sequence = await self._students.next_admission_sequence(
+                school_id=school.id, scope=year["label"]
+            )
+            try:
+                admission_no = admission_number(
+                    school.admission_no_format,
+                    year=int(year["label"]) if str(year["label"]).isdigit() else date.today().year,
+                    sequence=sequence,
+                )
+            except ValueError as exc:
+                raise Invalid(str(exc)) from exc
+
+            student = await self._students.add(
+                school_id=school.id,
+                admission_no=admission_no,
+                status=StudentStatus.ACTIVE,
+                **child,
+            )
+
+            existing = await self._guardians.by_phone(guardian_phone)
+            guardian_existed = existing is not None
+            # The existing record wins on every field, name included. That is
+            # deliberate and it is why the screen warns before submitting:
+            # a registrar who types "A. Mwanjala" for a number already held by
+            # "Asha Mwanjala" would otherwise see their spelling silently
+            # discarded, or worse, overwrite the name the family gave first.
+            record = existing or await self._guardians.add(
+                school_id=school.id,
+                full_name=guardian_name,
+                phone=guardian_phone,
+                national_id=guardian.get("national_id"),
+            )
+            await self._guardians.link(
+                school_id=school.id,
+                guardian_id=record.id,
+                student_id=student.id,
+                relationship=guardian.get("relationship") or Relationship.OTHER,
+                is_primary=True,
+                receives_invoices=True,
+            )
+
+            enrolment = await self._students.add_enrolment(
+                school_id=school.id,
+                student_id=student.id,
+                academic_year_id=klass["academic_year_id"],
+                class_group_id=class_group_id,
+                outcome=EnrolmentOutcome.ACTIVE,
+                residency=residency,
+                enrolled_on=enrolled_on or date.today(),
+            )
+
+            with _as_admissions_error():
+                raised = await self._invoicing.raise_joining_invoice(
+                    school_id=school.id,
+                    student_id=student.id,
+                    enrolment_id=enrolment.id,
+                    academic_year_id=klass["academic_year_id"],
+                    level_id=klass["level_id"],
+                    stream_id=klass["stream_id"],
+                    issued_on=date.today(),
+                    actor=principal,
+                    context=context,
+                )
+
+            login = await self._users.ensure_guardian_login(
+                school_id=school.id,
+                phone=guardian_phone,
+                guardian_id=record.id,
+                full_name=record.full_name,
+            )
+
+            await self._audit.record(
+                school_id=school.id,
+                action="student.admitted_by_hand",
+                actor_user_id=principal.user_id,
+                actor_role=principal.role.value,
+                entity_type="student",
+                entity_id=student.id,
+                changed={
+                    "admission_no": admission_no,
+                    "class": klass["name"],
+                    "guardian": "matched on phone" if guardian_existed else "new",
+                    "login": login,
+                    "invoice": raised.invoice.reference,
+                    "billed": str(raised.billed),
+                },
+                note=f"{student.first_name} {student.surname} into {klass['name']}",
+                ip=context.ip,
+                user_agent=context.user_agent,
+            )
+            await self._uow.commit()
+
+        # After the commit, never inside it, and it swallows its own failures:
+        # the child is on the roll and the bill is raised by here, so a gateway
+        # with no credit must not turn that into a failed request the registrar
+        # retries — making a second pupil out of one child.
+        await self._notifications.enrolment_confirmed(
+            school_id=school.id,
+            phone=guardian_phone,
+            child_first_name=student.first_name,
+            admission_no=admission_no,
+            student_id=student.id,
+        )
+
+        return AdmittedOutcome(
+            student_id=student.id,
+            enrolment_id=enrolment.id,
+            admission_no=admission_no,
+            class_name=klass["name"],
+            guardian_id=record.id,
+            guardian_existed=guardian_existed,
+            login=login,
+            invoice_id=raised.invoice.id,
+            invoice_reference=raised.invoice.reference,
+            billed=raised.billed,
         )
 
     async def _attach_deposit_to_student(

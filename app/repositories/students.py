@@ -119,6 +119,7 @@ class StudentRepository(Protocol):
     async def has_emergency_contact(self, student_id: UUID) -> bool: ...
     async def fee_summary(self, student_id: UUID) -> dict[str, Decimal]: ...
     async def next_admission_sequence(self, *, school_id: UUID, scope: str) -> int: ...
+    async def class_group_place(self, class_group_id: UUID) -> dict[str, Any] | None: ...
 
 
 class SqlStudentRepository:
@@ -272,6 +273,31 @@ class SqlStudentRepository:
             {"student_id": student_id},
         )
         return [dict(row._mapping) for row in rows]
+
+    async def class_group_place(self, class_group_id: UUID) -> dict[str, Any] | None:
+        """A class, what it prices against, and whether there is room in it.
+
+        The level and the stream come back because they are what a fee
+        structure is chosen by, and the registrar picked a class rather than a
+        level. The headcount comes back because a client's list of classes
+        with places left goes stale the moment a second registrar admits
+        somebody — the count that decides is the one read in the same
+        transaction as the enrolment.
+        """
+        row = (
+            await self._session.execute(
+                text(
+                    "SELECT cg.id, cg.school_id, cg.academic_year_id, cg.level_id, "
+                    "       cg.stream_id, cg.name, cg.capacity, "
+                    "       (SELECT count(*) FROM enrolment e "
+                    "         WHERE e.class_group_id = cg.id "
+                    "           AND e.outcome = 'active') AS pupils "
+                    "  FROM class_group cg WHERE cg.id = :id"
+                ),
+                {"id": class_group_id},
+            )
+        ).one_or_none()
+        return dict(row._mapping) if row else None
 
     async def active_enrolment(self, student_id: UUID) -> Enrolment | None:
         return (

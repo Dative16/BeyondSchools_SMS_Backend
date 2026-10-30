@@ -14,7 +14,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import PrincipalDep, StudentServiceDep, request_context
 from app.schemas.common import MAX_PAGE_SIZE, Page, PageParams
-from app.schemas.guardian import GuardianChildResponse, GuardianResponse
+from app.schemas.guardian import (
+    GuardianAtThisNumber,
+    GuardianChildResponse,
+    GuardianResponse,
+)
 from app.services.auth import RequestContext
 from app.services.students import Invalid, NotAllowed, NotFound
 
@@ -67,6 +71,58 @@ async def my_children(
         )
         for child in children
     ]
+
+
+@router.get(
+    "/at-number",
+    response_model=GuardianAtThisNumber | None,
+    summary="Who already uses this phone number",
+)
+async def guardian_at_number(
+    principal: PrincipalDep,
+    service: StudentServiceDep,
+    phone: Annotated[str, Query(min_length=9, max_length=20)],
+) -> GuardianAtThisNumber | None:
+    """Null when the number is new, which is the ordinary answer.
+
+    Asked by the counter admission form before it submits. The admission
+    matches a guardian on phone and the record already on file wins on every
+    field, name included — so without this a registrar could type a different
+    spelling of a name the school already holds and never be told their
+    version was dropped.
+
+    Declared before the list route for the same reason the by-hand admission
+    is declared before the application one: a fixed path must not be read as
+    a parameter.
+    """
+    from app.domain.admissions import normalise_phone
+
+    try:
+        found = await service.guardian_by_phone(principal, phone=normalise_phone(phone))
+    except (NotAllowed, NotFound) as exc:
+        raise _handle(exc) from exc
+    if found is None:
+        return None
+
+    guardian, children = found
+    return GuardianAtThisNumber(
+        guardian=GuardianResponse.model_validate(guardian),
+        children=[
+            GuardianChildResponse(
+                student_id=child.student_id,
+                admission_no=child.admission_no,
+                full_name=child.full_name,
+                class_name=child.class_name,
+                relationship=child.relationship,
+                is_primary=child.is_primary,
+                receives_invoices=child.receives_invoices,
+                billed=child.billed,
+                settled=child.settled,
+                balance=max(child.billed - child.settled, Decimal(0)),
+            )
+            for child in children
+        ],
+    )
 
 
 @router.get("", response_model=Page[GuardianResponse], summary="Guardians")
