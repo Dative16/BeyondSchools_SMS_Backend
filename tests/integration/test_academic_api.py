@@ -5,7 +5,7 @@ structure, that a partial update does not clear the settings it was not given,
 and that one school's structure is invisible to another's token.
 """
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -469,6 +469,169 @@ async def test_pupils_are_counted_from_active_enrolments(
 
     counted = {group["name"]: group["pupils"] for group in response.json()}
     assert counted["Standard 6 Counted"] == 3
+
+
+async def _a_class(client, admin, setup, **over):
+    body = {
+        "academic_year_id": str(setup["year_id"]),
+        "level_id": str(setup["std5"]),
+        "capacity": 40,
+    }
+    body.update(over)
+    created = await client.post("/api/v1/academic/class-groups", json=body, headers=admin)
+    assert created.status_code == 201, created.text
+    return created.json()
+
+
+async def test_a_full_class_can_be_opened_up(client, setup, admin) -> None:
+    """The counter admission form refuses a full class and tells the registrar
+    to come here and raise it. Until this existed, that was advice with
+    nowhere to act on."""
+    group = await _a_class(client, admin, setup, capacity=1)
+
+    changed = await client.patch(
+        f"/api/v1/academic/class-groups/{group['id']}",
+        json={"capacity": 45, "room": "Block B, Room 3"},
+        headers=admin,
+    )
+
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["capacity"] == 45
+    assert changed.json()["room"] == "Block B, Room 3"
+    assert changed.json()["name"] == group["name"], "the name is not editable here"
+
+
+async def test_a_capacity_below_the_headcount_is_recorded_not_refused(
+    client, setup, admin, owner_session
+) -> None:
+    """A school that moves thirty-seven children into a room rated for
+    thirty-five has done that. Refusing to record it would be insisting on a
+    tidier world rather than describing this one — and nothing is lost: the
+    class simply has no places left."""
+    group = await _a_class(client, admin, setup, capacity=40)
+    for index in range(3):
+        student_id = await make_student(
+            owner_session,
+            school_id=setup["school_id"],
+            admission_no=f"CAP/{uuid4().hex[:6]}/{index}",
+        )
+        await make_enrolment(
+            owner_session,
+            school_id=setup["school_id"],
+            student_id=student_id,
+            academic_year_id=setup["year_id"],
+            class_group_id=UUID(group["id"]),
+        )
+    await owner_session.commit()
+
+    changed = await client.patch(
+        f"/api/v1/academic/class-groups/{group['id']}",
+        json={"capacity": 2},
+        headers=admin,
+    )
+
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["capacity"] == 2
+    assert changed.json()["pupils"] == 3, "the real headcount, not the capacity"
+
+
+async def test_a_class_in_a_closed_year_is_fixed(client, setup, admin, owner_session) -> None:
+    """A closed year's classes are part of what a report card means."""
+    group = await _a_class(client, admin, setup)
+    await owner_session.execute(
+        text("UPDATE academic_year SET is_closed = true WHERE id = :id"),
+        {"id": setup["year_id"]},
+    )
+    await owner_session.commit()
+
+    changed = await client.patch(
+        f"/api/v1/academic/class-groups/{group['id']}",
+        json={"capacity": 60},
+        headers=admin,
+    )
+
+    assert changed.status_code == 422
+    assert "closed" in changed.json()["detail"]
+
+
+async def test_a_bursar_cannot_change_a_class(client, setup, admin) -> None:
+    group = await _a_class(client, admin, setup)
+    bursar = await token_for(client, email=setup["bursar_email"], subdomain=setup["subdomain"])
+
+    changed = await client.patch(
+        f"/api/v1/academic/class-groups/{group['id']}",
+        json={"capacity": 60},
+        headers=bursar,
+    )
+
+    assert changed.status_code == 403
+
+
+# --------------------------------------------------------------------------
+# Who can be put in front of a class
+# --------------------------------------------------------------------------
+async def test_the_teacher_picker_offers_only_people_the_save_would_accept(
+    client, setup, admin
+) -> None:
+    """The same roles `teacher_can_be_assigned` checks. A picker that offered
+    somebody the save then refused would be a form that lies."""
+    staff = await client.get("/api/v1/academic/teaching-staff", headers=admin)
+
+    assert staff.status_code == 200, staff.text
+    roles = {person["role"] for person in staff.json()}
+    assert roles <= {"class_teacher", "subject_teacher", "head_of_academics", "school_admin"}
+    assert "bursar" not in roles, "a bursar cannot take a register"
+    names = {person["full_name"] for person in staff.json()}
+    assert {"Josephat", "Agnes", "Datius"} <= names
+    assert "Salome" not in names
+
+
+async def test_the_picker_says_who_already_has_a_class(client, setup, admin) -> None:
+    """A teacher who already has a class can take a second, but the register
+    then falls to one person twice a day. That has to be visible."""
+    group = await _a_class(client, admin, setup)
+    await client.put(
+        f"/api/v1/academic/class-groups/{group['id']}/class-teacher",
+        json={"teacher_id": str(setup["teacher_id"])},
+        headers=admin,
+    )
+
+    staff = await client.get(
+        "/api/v1/academic/teaching-staff",
+        params={"year_id": str(setup["year_id"])},
+        headers=admin,
+    )
+
+    held = {person["full_name"]: person["class_name"] for person in staff.json()}
+    assert held["Josephat"] == group["name"]
+    assert held["Agnes"] is None, "free to take one"
+
+
+async def test_another_schools_staff_are_invisible(client, setup, admin, owner_session) -> None:
+    """Row-level security, checked from the endpoint a picker actually uses."""
+    await _add_user(
+        owner_session,
+        school_id=await owner_session.scalar(
+            text("SELECT id FROM school WHERE subdomain = :s"),
+            {"s": setup["other_subdomain"]},
+        ),
+        name="Someone Else",
+        role="class_teacher",
+        email=f"other-{uuid4().hex[:6]}@tumaini.ac.tz",
+    )
+    await owner_session.commit()
+
+    staff = await client.get("/api/v1/academic/teaching-staff", headers=admin)
+
+    assert "Someone Else" not in {person["full_name"] for person in staff.json()}
+
+
+async def test_a_bursar_cannot_list_the_teaching_staff(client, setup) -> None:
+    bursar = await token_for(client, email=setup["bursar_email"], subdomain=setup["subdomain"])
+
+    staff = await client.get("/api/v1/academic/teaching-staff", headers=bursar)
+
+    assert staff.status_code == 403
 
 
 async def test_a_guardian_cannot_be_made_a_class_teacher(

@@ -241,21 +241,58 @@ sentence. Nothing had walked into it because the public form only lists levels
 that have a structure, so only a staff offer on such a level could reach it.
 Translated at the boundary now, which fixes the offer path too.
 
-### Step E — school setup
+### Step E — school setup — **three of five screens done**
 
-Needed before January for a plain reason: there is currently no way to create
-the 2027 academic year, its terms, or the classes the intake enrols into.
+Needed before January for a plain reason: there was no way to create the 2027
+academic year, its terms, or the classes the intake enrols into.
 
-- API: `POST /academic/levels|subjects|class-groups`,
-  `PATCH /academic/levels/{id}`, `PUT /academic/years/{id}/terms`,
-  `POST /academic/years/{id}/current`, `PATCH /schools/me` — all present.
-- Design: `AcademicYears`, `Levels`, `Classes`, `Subjects`, `SchoolSettings`.
-- Gate: the 2027 year, its three terms, its levels and its class groups are
-  created through the UI, with no SQL.
-- Hold the line on the level ladder: `level.order_index` and a per-cohort
-  `exit_level_id` on the academic year, never a constant in code. The
-  `academic_year_exit_level` table already exists for this. It is what makes
-  the December 2027 run possible.
+- Design: `AcademicYears`, `Levels`, `Classes` — **built**. `Subjects`,
+  `SchoolSettings` — **not yet**, see below.
+- Gate: the year, its terms, its levels and its class groups are created
+  through the UI with no SQL. **Met** for all four.
+- The ladder is held where it was promised: `level.order_index` plus a
+  per-year exit rule in `academic_year_exit_level`, never a constant in code.
+  The Levels screen sets that rule per year, which is what makes the December
+  2027 double cohort possible — Standard 6 and Standard 7 both leaving, 72
+  leavers instead of 34, and the screen says the total out loud because the
+  office orders certificates from it.
+
+**Split on purpose, and here is the reason.** The five screens needed two API
+additions, and both belong to Classes:
+
+- `PATCH /academic/class-groups/{id}` — capacity and room. The counter
+  admission form already refuses a full class and tells the registrar to come
+  here and open it up; until now that was advice with nowhere to act on it.
+- `GET /academic/teaching-staff` — who can be put in front of a class, with
+  what they already hold. There was **no endpoint listing staff at all**,
+  which is Stage 2's first item surfacing early. `PUT .../class-teacher`
+  existed with no way to find out whom to pass it.
+
+Subjects and School settings need more than that, so they are their own step
+rather than two half-built screens:
+
+- Subjects has no `PATCH`, so a subject cannot be renamed or marked "no longer
+  taught" — and the artboard is largely about exactly that, since a subject
+  with marks against it must never be deleted.
+- Subjects' "who teaches what" needs the same staff endpoint plus a gap
+  calculation, and the artboard's "periods a week" is timetable data that does
+  not exist yet.
+- School settings needs the custom pupil fields editor and a logo upload.
+
+Neither blocks January: subjects matter for marks, which is Stage 2, and every
+school setting has a working default.
+
+**Two places the artboards were followed knowingly rather than literally.**
+
+The years artboard draws a **fees due** date per term. There is no such field
+and adding one would let two places disagree about when a bill is late — the
+due date is the issue date plus the school's grace period, one rule in one
+place. The screen states that rule, read-only, and says where to change it.
+
+The classes artboard has **Close the class**. Nothing in the API closes one,
+and a class that vanished while an invoice still pointed at it would leave a
+bill nobody could explain. The screen says so instead of offering a button
+that cannot work.
 
 ### Step F — parent and student
 

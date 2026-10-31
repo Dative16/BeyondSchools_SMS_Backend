@@ -21,6 +21,7 @@ from app.schemas.academic import (
     AcademicYearResponse,
     ClassGroupCreateRequest,
     ClassGroupResponse,
+    ClassGroupUpdateRequest,
     ClassTeacherRequest,
     ExitLevelsReplaceRequest,
     LadderResponse,
@@ -34,6 +35,7 @@ from app.schemas.academic import (
     SubjectResponse,
     TeachingAssignmentCreateRequest,
     TeachingAssignmentResponse,
+    TeachingStaffResponse,
     TermResponse,
     TermsReplaceRequest,
 )
@@ -435,6 +437,65 @@ async def create_class_group(
         capacity=group.capacity,
         pupils=0,
     )
+
+
+@router.patch(
+    "/class-groups/{group_id}",
+    response_model=ClassGroupResponse,
+    summary="Change a class's room or capacity",
+)
+async def update_class_group(
+    group_id: UUID,
+    body: ClassGroupUpdateRequest,
+    principal: PrincipalDep,
+    service: AcademicServiceDep,
+    context: ContextDep,
+) -> ClassGroupResponse:
+    """Capacity is the one that matters.
+
+    The counter admission form refuses a full class and tells the registrar to
+    come here and open it up, which until now was advice with nowhere to act
+    on it.
+    """
+    try:
+        view = await service.update_class_group(
+            principal,
+            group_id=group_id,
+            changes=body.model_dump(exclude_unset=True),
+            context=context,
+        )
+    except (NotAllowed, NotFound, Invalid) as exc:
+        raise _handle(exc) from exc
+    return ClassGroupResponse(
+        id=view.group.id,
+        academic_year_id=view.group.academic_year_id,
+        level_id=view.group.level_id,
+        stream_id=view.group.stream_id,
+        name=view.group.name,
+        class_teacher_id=view.group.class_teacher_id,
+        room=view.group.room,
+        capacity=view.group.capacity,
+        pupils=view.pupils,
+    )
+
+
+@router.get(
+    "/teaching-staff",
+    response_model=list[TeachingStaffResponse],
+    summary="Who can be put in front of a class",
+)
+async def teaching_staff(
+    principal: PrincipalDep,
+    service: AcademicServiceDep,
+    year_id: Annotated[UUID | None, Query()] = None,
+) -> list[TeachingStaffResponse]:
+    """The same roles the save would accept, so the picker cannot offer
+    somebody it would then refuse."""
+    try:
+        rows = await service.teaching_staff(principal, academic_year_id=year_id)
+    except (NotAllowed, NotFound) as exc:
+        raise _handle(exc) from exc
+    return [TeachingStaffResponse(**row) for row in rows]
 
 
 @router.put(

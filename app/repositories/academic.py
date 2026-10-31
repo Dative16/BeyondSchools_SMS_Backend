@@ -83,6 +83,7 @@ class AcademicRepository(Protocol):
     async def add_teaching_assignment(self, **values: Any) -> TeachingAssignment: ...
     async def remove_teaching_assignment(self, assignment_id: UUID) -> bool: ...
     async def teacher_can_be_assigned(self, teacher_id: UUID) -> bool: ...
+    async def teaching_staff(self, year_id: UUID | None) -> list[dict[str, Any]]: ...
 
 
 class SqlAcademicRepository:
@@ -365,6 +366,37 @@ class SqlAcademicRepository:
         await self._session.delete(assignment)
         await self._session.flush()
         return True
+
+    async def teaching_staff(self, year_id: UUID | None) -> list[dict[str, Any]]:
+        """Everybody who can be put in front of a class, and what they hold.
+
+        The same roles `teacher_can_be_assigned` accepts, so the picker cannot
+        offer somebody the save would then refuse.
+
+        Each row says which class they are already the class teacher of and
+        how many subject-class pairs they teach. A head of academics choosing
+        a class teacher needs both: a teacher who already has a class can take
+        a second, but the register then falls to one person twice a day, and
+        that is a decision rather than an accident.
+        """
+        rows = await self._session.execute(
+            text(
+                "SELECT u.id, u.full_name, u.role::text AS role, u.staff_no, "
+                "       cg.id AS class_group_id, cg.name AS class_name, "
+                "       (SELECT count(*) FROM teaching_assignment ta "
+                "         WHERE ta.teacher_id = u.id) AS subjects_taught "
+                "  FROM app_user u "
+                "  LEFT JOIN class_group cg ON cg.class_teacher_id = u.id "
+                "   AND (CAST(:year AS uuid) IS NULL "
+                "        OR cg.academic_year_id = CAST(:year AS uuid)) "
+                " WHERE u.is_active "
+                "   AND u.role IN ('class_teacher', 'subject_teacher', "
+                "                  'head_of_academics', 'school_admin') "
+                " ORDER BY u.full_name"
+            ),
+            {"year": year_id},
+        )
+        return [dict(row._mapping) for row in rows]
 
     async def teacher_can_be_assigned(self, teacher_id: UUID) -> bool:
         """Whether this user is somebody who can be given a class or a subject.

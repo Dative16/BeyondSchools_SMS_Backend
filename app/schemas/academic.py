@@ -194,6 +194,42 @@ class ClassGroupCreateRequest(BaseModel):
     capacity: int | None = Field(default=None, ge=1, le=200)
 
 
+class ClassGroupUpdateRequest(BaseModel):
+    """What can be changed about a class after it exists.
+
+    Not the name: it is written from the level and the stream by one function,
+    so a roll, an invoice and an SMS cannot disagree about what a class is
+    called. Not the level or the year either — a class that changed either
+    would move every child in it without anybody saying so.
+    """
+
+    room: str | None = Field(default=None, max_length=32)
+    #: Null means "nobody has said", which is not the same as nought. The
+    #: admission form treats a class with no capacity as having room.
+    capacity: int | None = Field(default=None, ge=1, le=300)
+
+
+class TeachingStaffResponse(BaseModel):
+    """Somebody who can be put in front of a class.
+
+    What they already hold comes with them, because a head of academics
+    choosing a class teacher needs to see it: a teacher who already has a
+    class can take a second, but the register then falls to one person twice a
+    day, and that should be a decision rather than an accident.
+    """
+
+    id: UUID
+    full_name: str
+    role: str
+    staff_no: str | None
+    #: The class they are already class teacher of, in the year asked about.
+    class_group_id: UUID | None
+    class_name: str | None
+    #: How many subject-and-class pairs they teach. Periods a week would be
+    #: better and belong to the timetable, which does not exist yet.
+    subjects_taught: int
+
+
 class ClassTeacherRequest(BaseModel):
     #: Null takes the current class teacher off the class.
     teacher_id: UUID | None = None

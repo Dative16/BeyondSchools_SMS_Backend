@@ -1753,6 +1753,147 @@
         }
       }
     },
+    "/api/v1/academic/class-groups/{group_id}": {
+      "patch": {
+        "tags": [
+          "academic"
+        ],
+        "summary": "Change a class's room or capacity",
+        "description": "Capacity is the one that matters.\n\nThe counter admission form refuses a full class and tells the registrar to\ncome here and open it up, which until now was advice with nowhere to act\non it.",
+        "operationId": "update_class_group_api_v1_academic_class_groups__group_id__patch",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Group Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClassGroupUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassGroupResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/academic/teaching-staff": {
+      "get": {
+        "tags": [
+          "academic"
+        ],
+        "summary": "Who can be put in front of a class",
+        "description": "The same roles the save would accept, so the picker cannot offer\nsomebody it would then refuse.",
+        "operationId": "teaching_staff_api_v1_academic_teaching_staff_get",
+        "parameters": [
+          {
+            "name": "year_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Year Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TeachingStaffResponse"
+                  },
+                  "title": "Response Teaching Staff Api V1 Academic Teaching Staff Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/academic/class-groups/{group_id}/class-teacher": {
       "put": {
         "tags": [
@@ -7899,6 +8040,38 @@
         ],
         "title": "ClassGroupResponse"
       },
+      "ClassGroupUpdateRequest": {
+        "properties": {
+          "room": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Room"
+          },
+          "capacity": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 300.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capacity"
+          }
+        },
+        "type": "object",
+        "title": "ClassGroupUpdateRequest",
+        "description": "What can be changed about a class after it exists.\n\nNot the name: it is written from the level and the stream by one function,\nso a roll, an invoice and an SMS cannot disagree about what a class is\ncalled. Not the level or the year either \u2014 a class that changed either\nwould move every child in it without anybody saying so."
+      },
       "ClassTeacherRequest": {
         "properties": {
           "teacher_id": {
@@ -13354,6 +13527,73 @@
           "class_group_id"
         ],
         "title": "TeachingAssignmentResponse"
+      },
+      "TeachingStaffResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "full_name": {
+            "type": "string",
+            "title": "Full Name"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "staff_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Staff No"
+          },
+          "class_group_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Class Group Id"
+          },
+          "class_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Class Name"
+          },
+          "subjects_taught": {
+            "type": "integer",
+            "title": "Subjects Taught"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "full_name",
+          "role",
+          "staff_no",
+          "class_group_id",
+          "class_name",
+          "subjects_taught"
+        ],
+        "title": "TeachingStaffResponse",
+        "description": "Somebody who can be put in front of a class.\n\nWhat they already hold comes with them, because a head of academics\nchoosing a class teacher needs to see it: a teacher who already has a\nclass can take a second, but the register then falls to one person twice a\nday, and that should be a decision rather than an accident."
       },
       "TermDraftRequest": {
         "properties": {

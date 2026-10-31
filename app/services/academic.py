@@ -647,6 +647,74 @@ class AcademicService:
             await self._uow.commit()
             return group
 
+    async def teaching_staff(
+        self, principal: Principal, *, academic_year_id: UUID | None = None
+    ) -> list[dict[str, Any]]:
+        """Who can be put in front of a class, and what they already hold."""
+        self._require(principal, Permission.ACADEMIC_MANAGE)
+        return await self._academic.teaching_staff(academic_year_id)
+
+    async def update_class_group(
+        self,
+        principal: Principal,
+        *,
+        group_id: UUID,
+        changes: dict[str, Any],
+        context: RequestContext,
+    ) -> ClassGroupView:
+        """Change a class's room or how many fit in it.
+
+        Capacity is the one that matters, because the admission form refuses a
+        full class and tells the registrar to come here and open it up — which
+        was, until now, advice with nowhere to act on it.
+
+        A capacity below the current headcount is allowed. A school that moves
+        thirty-seven children into a room rated for thirty-five has done that,
+        and a system that refused to record it would be insisting on a tidier
+        world rather than describing this one. Nothing is thrown out: the class
+        simply has no places left.
+
+        The name is not editable here. It is written from the level and the
+        stream by one function, so that a roll, an invoice and an SMS cannot
+        disagree about what a class is called.
+        """
+        self._require(principal, Permission.ACADEMIC_MANAGE)
+
+        async with self._uow:
+            group = await self._academic.class_group(group_id)
+            if group is None:
+                raise NotFound("no such class")
+
+            year = await self._academic.year(group.academic_year_id)
+            if year is not None and year.is_closed:
+                raise Invalid("that year is closed; its classes are fixed")
+
+            before = {"room": group.room, "capacity": group.capacity}
+            if "room" in changes:
+                group.room = changes["room"]
+            if "capacity" in changes:
+                group.capacity = changes["capacity"]
+
+            await self._audit.record(
+                school_id=group.school_id,
+                action="class_group.updated",
+                actor_user_id=principal.user_id,
+                actor_role=principal.role.value,
+                entity_type="class_group",
+                entity_id=group.id,
+                changed={
+                    "from": {k: v for k, v in before.items() if k in changes},
+                    "to": {k: changes[k] for k in changes},
+                },
+                note=f"{group.name}",
+                ip=context.ip,
+                user_agent=context.user_agent,
+            )
+            await self._uow.commit()
+
+        counts = await self._academic.enrolment_counts(group.academic_year_id)
+        return ClassGroupView(group=group, pupils=counts.get(group.id, 0))
+
     async def assign_class_teacher(
         self,
         principal: Principal,
