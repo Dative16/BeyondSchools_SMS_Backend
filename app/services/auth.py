@@ -97,10 +97,15 @@ class RequestContext:
 
 @dataclass(frozen=True, slots=True)
 class Me:
-    """The caller, as the staff app's shell needs them."""
+    """The caller, as the shell needs them."""
 
     full_name: str
     must_change_password: bool
+    #: The number they sign in with, for the portal to show back to them. Not
+    #: editable there: a guardian who could change the number they
+    #: authenticate with could lock themselves out of their children's fees,
+    #: so the office changes it and this is confirmation rather than a field.
+    phone: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -637,7 +642,11 @@ class AuthService:
         user = await self._users.find_by_id(principal.user_id)
         if user is None or not user.is_active:
             raise InvalidCredentials("this account no longer exists")
-        return Me(full_name=user.full_name, must_change_password=user.must_change_password)
+        return Me(
+            full_name=user.full_name,
+            must_change_password=user.must_change_password,
+            phone=user.phone,
+        )
 
     async def open_applicant_session(
         self,

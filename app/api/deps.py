@@ -329,6 +329,7 @@ def _invoicing(session: AsyncSession) -> InvoicingService:
         uow=SqlAlchemyUnitOfWork(session),
         fees=SqlFeesRepository(session),
         payments=SqlPaymentRepository(session),
+        guardians=SqlGuardianRepository(session),
         audit=SqlAuditRepository(session),
     )
 

@@ -93,6 +93,17 @@ class School(UUIDPrimaryKey, Timestamped, Base):
     #: Arrears below this are ignored by whichever of the two switches is on.
     arrears_threshold: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
 
+    #: Where a parent actually pays. Payments are manual in Phase 1 — no
+    #: aggregator, no payment button, no callback — so these three are the only
+    #: payment instruction the system can give a family. Not secret: an account
+    #: number is printed on every invoice a school sends.
+    bank_name: Mapped[str | None] = mapped_column(String(80))
+    bank_account_name: Mapped[str | None] = mapped_column(String(120))
+    #: Text, because "2011 4409 118" is how it is written on a deposit slip and
+    #: normalising the spaces out would make a parent check it character by
+    #: character against something that looks different.
+    bank_account_number: Mapped[str | None] = mapped_column(String(40))
+
     #: Set once this school's students are provisioned on aibeyondschools.co.tz.
     ai_platform_tenant_ref: Mapped[str | None] = mapped_column(String(128))
 

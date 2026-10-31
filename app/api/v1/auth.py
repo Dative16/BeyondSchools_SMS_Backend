@@ -270,6 +270,7 @@ async def me(principal: PrincipalDep, service: TenantAuthServiceDep) -> Principa
         guardian_id=principal.guardian_id,
         permissions=sorted(permissions_of(principal.role)),
         must_change_password=described.must_change_password,
+        phone=described.phone,
     )
 
 

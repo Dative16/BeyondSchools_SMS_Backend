@@ -162,6 +162,19 @@ class StudentService:
                 raise NotFound("no such student")
             return student
 
+        if principal.role is Role.STUDENT:
+            # Their own record and nothing else. `may_see_student` has always
+            # said this and never got the chance to: the STUDENT_READ check
+            # below rejected every student before the question was asked, so a
+            # pupil could not read their own file and the branch that allowed
+            # it was unreachable.
+            self._require(principal, Permission.OWN_RECORD_READ)
+            if principal.student_id != student_id:
+                # A 404 for the reason a guardian gets one: a pupil probing
+                # ids should not learn who exists.
+                raise NotFound("no such student")
+            return student
+
         self._require(principal, Permission.STUDENT_READ)
 
         enrolment = await self._students.active_enrolment(student_id)

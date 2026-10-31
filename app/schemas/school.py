@@ -47,6 +47,11 @@ class SchoolResponse(BaseModel):
     arrears_blocks_results: bool
     arrears_blocks_promotion: bool
     arrears_threshold: Decimal | None
+    #: Where a parent pays. The only payment instruction the system can give
+    #: while payments are manual.
+    bank_name: str | None
+    bank_account_name: str | None
+    bank_account_number: str | None
 
 
 class SchoolUpdateRequest(BaseModel):
@@ -88,6 +93,9 @@ class SchoolUpdateRequest(BaseModel):
     arrears_blocks_results: bool | None = None
     arrears_blocks_promotion: bool | None = None
     arrears_threshold: Decimal | None = Field(default=None, ge=0)
+    bank_name: str | None = Field(default=None, max_length=80)
+    bank_account_name: str | None = Field(default=None, max_length=120)
+    bank_account_number: str | None = Field(default=None, max_length=40)
 
 
 # --------------------------------------------------------------------------

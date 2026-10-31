@@ -11677,6 +11677,17 @@
             "type": "boolean",
             "title": "Must Change Password",
             "default": false
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
           }
         },
         "type": "object",
@@ -12822,6 +12833,39 @@
               }
             ],
             "title": "Arrears Threshold"
+          },
+          "bank_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Name"
+          },
+          "bank_account_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Account Name"
+          },
+          "bank_account_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Account Number"
           }
         },
         "type": "object",
@@ -12848,7 +12892,10 @@
           "invoice_grace_days",
           "arrears_blocks_results",
           "arrears_blocks_promotion",
-          "arrears_threshold"
+          "arrears_threshold",
+          "bank_name",
+          "bank_account_name",
+          "bank_account_number"
         ],
         "title": "SchoolResponse"
       },
@@ -13083,6 +13130,42 @@
               }
             ],
             "title": "Arrears Threshold"
+          },
+          "bank_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 80
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Name"
+          },
+          "bank_account_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Account Name"
+          },
+          "bank_account_number": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Account Number"
           }
         },
         "type": "object",

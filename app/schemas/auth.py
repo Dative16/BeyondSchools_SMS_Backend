@@ -102,6 +102,9 @@ class PrincipalResponse(BaseModel):
     guardian_id: UUID | None = None
     permissions: list[Permission]
     must_change_password: bool = False
+    #: Only on `/auth/me`, and only so the portal can show a parent the number
+    #: they sign in with. Absent from a login response, which does not read it.
+    phone: str | None = None
 
 
 class TokenResponse(BaseModel):

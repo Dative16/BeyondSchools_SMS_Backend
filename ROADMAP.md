@@ -307,22 +307,48 @@ and a class that vanished while an invoice still pointed at it would leave a
 bill nobody could explain. The screen says so instead of offering a button
 that cannot work.
 
-### Step F — parent and student
+### Step F — parent and student — **done**
 
-Closes a live hole: a guardian who sets a password today lands on the staff
-dashboard and sees almost nothing.
+- Design: `ParentHome(+Phone)`, `StudentHome(+Phone)`, `MyAccount(+Phone)` —
+  all built, as one responsive set rather than separate phone screens.
+- Gate: a guardian signs in, sees each child's balance, and crosses to the AI
+  platform without a second login. Met. `POST /auth/ai-handoff` is called by
+  something for the first time, and a test asserts the destination comes from
+  the server rather than the client.
 
-- API: `GET /guardians/me/children`, `POST /auth/password`,
-  `POST /auth/ai-handoff` — all present. `ai-handoff` has never been called by
-  anything; this is the step that proves the single sign-on the whole project
-  rests on.
-- Design: `ParentHome(+Phone)`, `StudentHome(+Phone)`, `MyAccount(+Phone)`.
-- Gate: a guardian signs in on a 360 px viewport, sees each child's balance,
-  and crosses to the AI platform without a second login.
+**The hole was the routing, not the screens.** Every signed-in route sat under
+the staff shell, so a guardian who set a password got a sidebar of screens
+they may not open and tiles that 403'd. The server was right throughout — it
+refused every request — which is exactly why nothing on the API side showed
+it. There are now two shells chosen by role, and `/` is home for everybody.
 
-The spec files the parent portal under Phase 3 in its module map and under
-Phase 2 in its roadmap. It is built now: the screens are designed, the API
-exists, and the gate above is the only way to test the handoff.
+**Three access defects came out of building it**, all of the same shape: a
+permission model that was right in the abstract and untested from the outside.
+
+- A pupil could not read their own record. `may_see_student` has always
+  allowed it and never got the chance to: the `STUDENT_READ` check above it
+  rejected every student before the question was asked, so the branch that
+  allowed it was unreachable.
+- A guardian could not read their own child's statement. It required
+  `INVOICE_READ`, which a guardian does not have — so the one question the
+  parent portal exists to answer was forbidden to the person asking. Opened to
+  the family, scoped by the link table, with a test that a guardian still
+  cannot read the school's invoice list, arrears or roll.
+- `/auth/me` did not carry the phone number the account signs in with, so the
+  portal could not show a parent the number their fees are tied to.
+
+**`school` gained three columns**: bank name, account name, account number.
+Payments are manual in Phase 1 — no aggregator, no button, no callback — which
+makes the bank details the only payment instruction the system can give, and
+the portal had nowhere to read them from. If a school has not filled them in,
+the screen says "pay at the office" rather than showing a half-empty table
+that looks like it might be an account number.
+
+Two artboard details differ knowingly. The password rule is **ten**
+characters, not eight, because that is what `ChangePasswordRequest` enforces
+and a form that accepted eight would fail on submit with nothing to act on.
+And the notices feed is built from term and fee facts rather than invented: a
+notices table arrives with Communications.
 
 ### Step C — the profile panels
 

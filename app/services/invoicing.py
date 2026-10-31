@@ -48,11 +48,12 @@ from app.domain.invoicing import (
     shillings,
 )
 from app.domain.payments import Channel, PaymentState
-from app.domain.roles import Permission, Principal, can
+from app.domain.roles import Permission, Principal, Role, can
 from app.models.fees import Invoice, InvoiceKind
 from app.repositories.audit import AuditRepository
 from app.repositories.base import UnitOfWork
 from app.repositories.fees import FeesRepository, InvoiceTotals
+from app.repositories.guardians import GuardianRepository
 from app.repositories.payments import PaymentRepository
 from app.services.auth import RequestContext
 
@@ -88,11 +89,13 @@ class InvoicingService:
         uow: UnitOfWork,
         fees: FeesRepository,
         payments: PaymentRepository,
+        guardians: GuardianRepository,
         audit: AuditRepository,
     ) -> None:
         self._uow = uow
         self._fees = fees
         self._payments = payments
+        self._guardians = guardians
         self._audit = audit
 
     def _require(self, principal: Principal, permission: Permission) -> None:
@@ -804,8 +807,38 @@ class InvoicingService:
     async def statement(
         self, principal: Principal, *, student_id: UUID
     ) -> list[dict[str, Any]]:
+        """Every bill one child has had.
+
+        Readable by the office, and by the family itself. A parent portal
+        whose main button a parent cannot press is not a parent portal, and
+        this is the one question the whole thing is for: what do I owe, and
+        for which child.
+        """
+        if principal.role in (Role.GUARDIAN, Role.STUDENT):
+            if student_id not in await self._family_student_ids(principal):
+                # A 404 rather than a 403: a parent probing ids should not be
+                # able to tell a child who exists from one who does not.
+                raise NotFound("no such student")
+            return await self._fees.statement(student_id)
+
         self._require(principal, Permission.INVOICE_READ)
         return await self._fees.statement(student_id)
+
+    async def _family_student_ids(self, principal: Principal) -> frozenset[UUID]:
+        """The children this account is actually allowed to see.
+
+        A student is one child: their own. A guardian is whichever children the
+        link table says are theirs, which is a row in the database and cannot
+        be answered from the token's claims alone.
+        """
+        if principal.role is Role.STUDENT:
+            self._require(principal, Permission.OWN_RECORD_READ)
+            return frozenset({principal.student_id}) if principal.student_id else frozenset()
+
+        self._require(principal, Permission.OWN_CHILDREN_READ)
+        if principal.guardian_id is None:
+            raise NotAllowed("this account is not linked to a guardian record")
+        return await self._guardians.student_ids_for(principal.guardian_id)
 
     async def arrears(
         self,

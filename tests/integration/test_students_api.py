@@ -486,6 +486,159 @@ async def test_a_guardian_sees_their_own_children_and_nobody_elses(
     assert other.status_code == 404
 
 
+async def _family(client, admin, setup, owner_session, *, first="Neema"):
+    """A child on the roll, a guardian with a login, a pupil with a login."""
+    student_id = await admit(client, admin, first=first)
+    await enrol(client, admin, setup, student_id)
+    phone = f"0755{uuid4().int % 1000000:06d}"
+    linked = await client.post(
+        f"/api/v1/students/{student_id}/guardians",
+        json={
+            "guardian": {"full_name": "Asha Mwanjala", "phone": phone},
+            "link": {"relationship": "mother", "is_primary": True},
+        },
+        headers=admin,
+    )
+    await _add_user(
+        owner_session,
+        school_id=setup["school_id"],
+        name="Asha Mwanjala",
+        role="guardian",
+        phone=phone,
+        guardian_id=linked.json()["guardian_id"],
+    )
+    pupil_email = f"pupil-{uuid4().hex[:6]}@mwenge.ac.tz"
+    await owner_session.execute(
+        text(
+            "INSERT INTO app_user (id, school_id, full_name, email, role, password_hash, "
+            " must_change_password, is_active, failed_logins, student_id, created_at, updated_at) "
+            "VALUES (gen_random_uuid(), :school, :name, :email, 'student', :hash, false, "
+            " true, 0, :student, now(), now())"
+        ),
+        {
+            "school": setup["school_id"],
+            "name": f"{first} Mwanjala",
+            "email": pupil_email,
+            "hash": hash_password(PASSWORD),
+            "student": student_id,
+        },
+    )
+    await owner_session.commit()
+    return {
+        "student_id": student_id,
+        "guardian_phone": phone,
+        "pupil_email": pupil_email,
+    }
+
+
+# --------------------------------------------------------------------------
+# The family's own portal
+# --------------------------------------------------------------------------
+async def test_a_pupil_can_read_their_own_record(
+    client, setup, admin, owner_session
+) -> None:
+    """`may_see_student` has always allowed this and never got the chance to:
+    the STUDENT_READ check above it rejected every student before the question
+    was asked, so a pupil could not open their own file and the branch that
+    allowed it was unreachable."""
+    family = await _family(client, admin, setup, owner_session)
+    pupil = await token(client, email=family["pupil_email"], subdomain=setup["subdomain"])
+
+    own = await client.get(f"/api/v1/students/{family['student_id']}", headers=pupil)
+
+    assert own.status_code == 200, own.text
+    body = own.json()
+    assert body["student"]["first_name"] == "Neema"
+    assert body["class_name"], "their own class, which the school page shows"
+    # And not the sensitive parts: the profile hands those out only on
+    # HEALTH_READ, which a pupil does not have.
+    assert body["health"] is None
+    assert body["emergency_contacts"] == []
+
+
+async def test_a_pupil_cannot_read_another_pupils_record(
+    client, setup, admin, owner_session
+) -> None:
+    """A 404, not a 403: probing ids must not teach a pupil who exists."""
+    family = await _family(client, admin, setup, owner_session)
+    someone_else = await admit(client, admin, first="Baraka")
+    pupil = await token(client, email=family["pupil_email"], subdomain=setup["subdomain"])
+
+    other = await client.get(f"/api/v1/students/{someone_else}", headers=pupil)
+
+    assert other.status_code == 404
+
+
+async def test_a_guardian_can_read_their_childs_statement(
+    client, setup, admin, owner_session
+) -> None:
+    """The parent portal's main button. It needed INVOICE_READ, which a
+    guardian does not have, so the one question the portal exists to answer —
+    what do I owe, and for which child — was forbidden to the person asking."""
+    family = await _family(client, admin, setup, owner_session)
+    guardian = await token(
+        client, email=family["guardian_phone"], subdomain=setup["subdomain"]
+    )
+
+    statement = await client.get(
+        f"/api/v1/fees/students/{family['student_id']}/statement", headers=guardian
+    )
+
+    assert statement.status_code == 200, statement.text
+    assert statement.json()["student_id"] == str(family["student_id"])
+
+
+async def test_a_pupil_can_read_their_own_statement(
+    client, setup, admin, owner_session
+) -> None:
+    family = await _family(client, admin, setup, owner_session)
+    pupil = await token(client, email=family["pupil_email"], subdomain=setup["subdomain"])
+
+    statement = await client.get(
+        f"/api/v1/fees/students/{family['student_id']}/statement", headers=pupil
+    )
+
+    assert statement.status_code == 200, statement.text
+
+
+async def test_a_guardian_cannot_read_another_familys_statement(
+    client, setup, admin, owner_session
+) -> None:
+    """The check is a query against the link table, not a claim in the token:
+    which children are a guardian's is a question about rows."""
+    family = await _family(client, admin, setup, owner_session)
+    someone_else = await admit(client, admin, first="Baraka")
+    guardian = await token(
+        client, email=family["guardian_phone"], subdomain=setup["subdomain"]
+    )
+
+    statement = await client.get(
+        f"/api/v1/fees/students/{someone_else}/statement", headers=guardian
+    )
+
+    assert statement.status_code == 404
+
+
+async def test_a_guardian_still_cannot_read_the_whole_schools_invoices(
+    client, setup, admin, owner_session
+) -> None:
+    """Widening the statement must not widen anything else. A parent reading
+    their own child's bills is not a parent reading the school's ledger."""
+    family = await _family(client, admin, setup, owner_session)
+    guardian = await token(
+        client, email=family["guardian_phone"], subdomain=setup["subdomain"]
+    )
+
+    for path in (
+        "/api/v1/fees/invoices",
+        "/api/v1/fees/arrears",
+        "/api/v1/fees/collection",
+        "/api/v1/students",
+    ):
+        refused = await client.get(path, headers=guardian)
+        assert refused.status_code == 403, f"{path} answered {refused.status_code}"
+
+
 # --------------------------------------------------------------------------
 # Health
 # --------------------------------------------------------------------------
