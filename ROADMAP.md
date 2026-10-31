@@ -350,18 +350,44 @@ and a form that accepted eight would fail on submit with nothing to act on.
 And the notices feed is built from term and fee facts rather than invented: a
 notices table arrives with Communications.
 
-### Step C — the profile panels
+### Step C — the profile panels — **done**
 
-Last of the five, because nothing is blocked on it — but it unlocks 13
-orphaned endpoints and is the difference between a record that can be read and
-one that can be kept.
+Last of the five, and the one that turned 13 orphaned endpoints into screens.
+Every one of them was reachable and none of them was reached.
 
-- API: documents and presigned URLs, guardians, health, emergency contacts,
-  custom fields, transfer-out — all present.
 - Design: `ProfileDocuments`, `ProfileGuardians`, `ProfileMedical`,
-  `ProfileCustomFields`, `ChangeClassDialog`.
-- Gate: a child's record is corrected, a guardian added, a document attached
-  and re-read through a presigned link, and a class changed.
+  `ProfileCustomFields`, `ChangeClassDialog` — all built, as four tabs on the
+  pupil record plus a dialog, because they are one record and a registrar
+  correcting a file moves between them in one sitting.
+- Gate: a guardian added, a document attached and re-read through a presigned
+  link, medical notes and emergency contacts saved, the school's own fields
+  filled in, and a class changed. Met.
+
+**The document path is the part worth stating.** The bytes never touch the
+API: the browser takes a presigned ticket, uploads straight to object storage,
+and only then is the record written — so a failed upload records nothing, and
+a birth certificate never passes through an application server's logs, memory
+or crash dumps. Reading one back fetches a fresh short-lived link at the
+moment of the click and never stores it. There is a test that asserts no API
+call carries a `File`, because a test that only checked "a document appeared"
+would pass against an implementation that posted the bytes through.
+
+**Medical is not drawn at all without `health:read`**, rather than drawn and
+then refused. Children's health data is sensitive personal data under the
+Personal Data Protection Act 2022.
+
+**A defect the tests found in a shared primitive.** `Field` generates the id
+that ties a label to its control, and only the controls that read its context
+get one — so the raw `<input type="file">` in the upload dialog had a label
+pointing at nothing, and a screen reader could not find the input at all.
+There is a `FileInput` primitive now, and the same trap is closed for anything
+built on `Field` later.
+
+Changing a class says what the move will cost before it is made: a fee
+structure follows the level, so a move between levels changes what a family is
+billed at the next term run while a move between streams of one level does
+not. A registrar moving somebody for a timetable reason should know which of
+those they are about to do.
 
 **Stage 1 is done when** a January 2027 intake can be run start to finish on
 this system by somebody who is not a developer.
