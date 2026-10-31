@@ -293,6 +293,7 @@ async def academic_service(session: TenantSessionDep) -> AcademicService:
         uow=SqlAlchemyUnitOfWork(session),
         academic=SqlAcademicRepository(session),
         schools=SqlSchoolRepository(session),
+        settings_repo=SqlRegistrationSettingsRepository(session),
         audit=SqlAuditRepository(session),
     )
 

@@ -817,6 +817,188 @@
         }
       }
     },
+    "/api/v1/schools/me/fields": {
+      "get": {
+        "tags": [
+          "schools"
+        ],
+        "summary": "The fields this school adds",
+        "description": "Readable by any staff account, because the pupil profile has to draw\nthem for anybody who can read a pupil.",
+        "operationId": "my_school_fields_api_v1_schools_me_fields_get",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SchoolFieldResponse"
+                  },
+                  "title": "Response My School Fields Api V1 Schools Me Fields Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "schools"
+        ],
+        "summary": "Add a field",
+        "description": "Every field added here appears, empty, on every pupil record the school\nhas. Somebody then has to fill them all in.",
+        "operationId": "add_my_school_field_api_v1_schools_me_fields_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SchoolFieldCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchoolFieldResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/schools/me/fields/{field_id}": {
+      "patch": {
+        "tags": [
+          "schools"
+        ],
+        "summary": "Relabel or retire a field",
+        "description": "Neither the key nor the kind can change.\n\nValues already recorded are stored under that key and typed by that kind,\nso changing either would reinterpret answers people have already given.\nRetiring the field keeps every value and stops it being asked for again.",
+        "operationId": "update_my_school_field_api_v1_schools_me_fields__field_id__patch",
+        "parameters": [
+          {
+            "name": "field_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Field Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SchoolFieldUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchoolFieldResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/academic/years": {
       "get": {
         "tags": [
@@ -1970,6 +2152,7 @@
           "academic"
         ],
         "summary": "Subjects",
+        "description": "Each subject with the levels it is taught at.\n\nOne query for the levels rather than one per subject: a dozen subjects\nasking one at a time is a dozen round trips on the connection this app is\nbuilt for.",
         "operationId": "list_subjects_api_v1_academic_subjects_get",
         "parameters": [
           {
@@ -1997,7 +2180,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/SubjectResponse"
+                    "$ref": "#/components/schemas/SubjectRowResponse"
                   },
                   "title": "Response List Subjects Api V1 Academic Subjects Get"
                 }
@@ -2052,6 +2235,76 @@
         },
         "responses": {
           "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubjectResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/academic/subjects/{subject_id}": {
+      "patch": {
+        "tags": [
+          "academic"
+        ],
+        "summary": "Rename, move or retire a subject",
+        "description": "There is no delete.\n\nA report card from a closed year names its subjects, so retiring one \u2014\n`is_active: false` \u2014 keeps every old record and stops it appearing on new\nmark sheets. Renaming is safe: the code is what records point at.",
+        "operationId": "update_subject_api_v1_academic_subjects__subject_id__patch",
+        "parameters": [
+          {
+            "name": "subject_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Subject Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubjectUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
@@ -9256,6 +9509,17 @@
         "title": "FieldKind",
         "description": "What a custom field holds.\n\nDeliberately five. Each one has an obvious input on a phone and an obvious\nvalidation; a sixth (\"anything\") would mean nothing could be checked."
       },
+      "FieldScope": {
+        "type": "string",
+        "enum": [
+          "student",
+          "guardian",
+          "enrolment",
+          "application"
+        ],
+        "title": "FieldScope",
+        "description": "What a custom field hangs off.\n\n`ENROLMENT` is the interesting one: a bed number or a bus route is a fact\nabout a child *this year*, not a fact about the child. Hanging it off the\nstudent would make last year's dormitory unanswerable."
+      },
       "FieldValuesRequest": {
         "properties": {
           "values": {
@@ -12160,6 +12424,240 @@
         "title": "SchoolBrandResponse",
         "description": "What the login page and the public application form may know.\n\nThis is served unauthenticated, so it holds branding and nothing else \u2014 no\nfee settings, no counts, nothing about a single child."
       },
+      "SchoolFieldCreateRequest": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "maxLength": 48,
+            "minLength": 1,
+            "title": "Key"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Label"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/FieldKind"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/FieldScope",
+            "default": "student"
+          },
+          "help_text": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 400
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Help Text"
+          },
+          "options": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 40,
+            "title": "Options"
+          },
+          "required_at_registration": {
+            "type": "boolean",
+            "title": "Required At Registration",
+            "default": false
+          },
+          "is_sensitive": {
+            "type": "boolean",
+            "title": "Is Sensitive",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "label",
+          "kind"
+        ],
+        "title": "SchoolFieldCreateRequest",
+        "description": "Add a field.\n\nEvery field added here appears, empty, on every pupil record the school\nhas, and somebody then has to fill them all in. That cost is the reason\n`required_at_registration` defaults to false: a required field on the\npublic form costs completed applications."
+      },
+      "SchoolFieldResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "help_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Help Text"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/FieldKind"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/FieldScope"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Options"
+          },
+          "required_at_registration": {
+            "type": "boolean",
+            "title": "Required At Registration"
+          },
+          "is_sensitive": {
+            "type": "boolean",
+            "title": "Is Sensitive"
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active"
+          },
+          "sort_order": {
+            "type": "integer",
+            "title": "Sort Order"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "key",
+          "label",
+          "help_text",
+          "kind",
+          "scope",
+          "options",
+          "required_at_registration",
+          "is_sensitive",
+          "is_active",
+          "sort_order"
+        ],
+        "title": "SchoolFieldResponse",
+        "description": "One field this school has decided it needs."
+      },
+      "SchoolFieldUpdateRequest": {
+        "properties": {
+          "label": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "help_text": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 400
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Help Text"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 40
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Options"
+          },
+          "required_at_registration": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required At Registration"
+          },
+          "is_sensitive": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Sensitive"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "sort_order": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 500.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sort Order"
+          }
+        },
+        "type": "object",
+        "title": "SchoolFieldUpdateRequest",
+        "description": "Relabel a field, or retire it.\n\nNo key and no kind. Values already recorded are stored under that key and\ntyped by that kind, so changing either would reinterpret answers people\nhave already given."
+      },
       "SchoolResponse": {
         "properties": {
           "id": {
@@ -13332,6 +13830,38 @@
         ],
         "title": "SubjectCreateRequest"
       },
+      "SubjectLevelOnSubject": {
+        "properties": {
+          "level_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Level Id"
+          },
+          "level_name": {
+            "type": "string",
+            "title": "Level Name"
+          },
+          "periods_per_week": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Periods Per Week"
+          }
+        },
+        "type": "object",
+        "required": [
+          "level_id",
+          "level_name",
+          "periods_per_week"
+        ],
+        "title": "SubjectLevelOnSubject",
+        "description": "One level a subject is taught at, and how often."
+      },
       "SubjectLevelRequest": {
         "properties": {
           "level_id": {
@@ -13397,6 +13927,134 @@
           "is_active"
         ],
         "title": "SubjectResponse"
+      },
+      "SubjectRowResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "is_core": {
+            "type": "boolean",
+            "title": "Is Core"
+          },
+          "is_examinable": {
+            "type": "boolean",
+            "title": "Is Examinable"
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active"
+          },
+          "levels": {
+            "items": {
+              "$ref": "#/components/schemas/SubjectLevelOnSubject"
+            },
+            "type": "array",
+            "title": "Levels"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "code",
+          "name",
+          "is_core",
+          "is_examinable",
+          "is_active",
+          "levels"
+        ],
+        "title": "SubjectRowResponse",
+        "description": "A subject as the subjects screen lists it.\n\nThe levels come with the row because the screen shows them, and because\nthe periods per week belong to the subject-and-level pairing rather than\nto the subject: Kiswahili at Standard 2 and at Standard 6 are one subject\nagainst two syllabuses."
+      },
+      "SubjectUpdateRequest": {
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 16,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "is_core": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Core"
+          },
+          "is_examinable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Examinable"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "levels": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SubjectLevelRequest"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Levels"
+          }
+        },
+        "type": "object",
+        "title": "SubjectUpdateRequest",
+        "description": "Rename a subject, move it, or retire it.\n\nThere is no delete. A report card from a closed year names its subjects,\nso retiring one \u2014 `is_active: false` \u2014 keeps every old record and stops it\nappearing on new mark sheets."
       },
       "SuspensePayment": {
         "properties": {

@@ -245,6 +245,14 @@ class SubjectLevelRequest(BaseModel):
     periods_per_week: int | None = Field(default=None, ge=1, le=20)
 
 
+class SubjectLevelOnSubject(BaseModel):
+    """One level a subject is taught at, and how often."""
+
+    level_id: UUID
+    level_name: str
+    periods_per_week: int | None
+
+
 class SubjectResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -254,6 +262,36 @@ class SubjectResponse(BaseModel):
     is_core: bool
     is_examinable: bool
     is_active: bool
+
+
+class SubjectRowResponse(SubjectResponse):
+    """A subject as the subjects screen lists it.
+
+    The levels come with the row because the screen shows them, and because
+    the periods per week belong to the subject-and-level pairing rather than
+    to the subject: Kiswahili at Standard 2 and at Standard 6 are one subject
+    against two syllabuses.
+    """
+
+    levels: list[SubjectLevelOnSubject]
+
+
+class SubjectUpdateRequest(BaseModel):
+    """Rename a subject, move it, or retire it.
+
+    There is no delete. A report card from a closed year names its subjects,
+    so retiring one — `is_active: false` — keeps every old record and stops it
+    appearing on new mark sheets.
+    """
+
+    code: str | None = Field(default=None, min_length=1, max_length=16)
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+    is_core: bool | None = None
+    is_examinable: bool | None = None
+    #: False retires it: taught no longer, but still named by old records.
+    is_active: bool | None = None
+    #: Replaces the whole set when given. Left out, the levels are untouched.
+    levels: list[SubjectLevelRequest] | None = None
 
 
 class SubjectCreateRequest(BaseModel):

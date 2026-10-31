@@ -684,6 +684,232 @@ async def test_a_guardian_cannot_be_made_a_class_teacher(
 # --------------------------------------------------------------------------
 # Subjects and who teaches them
 # --------------------------------------------------------------------------
+async def _a_subject(client, admin, setup, **over):
+    body = {
+        "code": "KIS",
+        "name": "Kiswahili",
+        "is_core": True,
+        "is_examinable": True,
+        "levels": [{"level_id": str(setup["std6"]), "periods_per_week": 5}],
+    }
+    body.update(over)
+    created = await client.post("/api/v1/academic/subjects", json=body, headers=admin)
+    assert created.status_code == 201, created.text
+    return created.json()
+
+
+async def test_the_subjects_list_carries_where_each_is_taught(client, setup, admin) -> None:
+    """Kiswahili at Standard 2 and at Standard 6 are one subject against two
+    syllabuses, so the periods belong to the pairing. The screen shows both,
+    and one query answers for every subject rather than one apiece."""
+    subject = await _a_subject(client, admin, setup)
+
+    listed = await client.get("/api/v1/academic/subjects", headers=admin)
+
+    assert listed.status_code == 200, listed.text
+    row = next(each for each in listed.json() if each["id"] == subject["id"])
+    assert [(level["level_name"], level["periods_per_week"]) for level in row["levels"]] == [
+        ("Standard 6", 5)
+    ]
+
+
+async def test_renaming_a_subject_keeps_the_code_records_point_at(
+    client, setup, admin
+) -> None:
+    """Renaming is safe by design. The code is the thing records point at,
+    which is why it is worth saying so on the screen."""
+    subject = await _a_subject(client, admin, setup)
+
+    changed = await client.patch(
+        f"/api/v1/academic/subjects/{subject['id']}",
+        json={"name": "Kiswahili Sanifu"},
+        headers=admin,
+    )
+
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["name"] == "Kiswahili Sanifu"
+    assert changed.json()["code"] == "KIS", "unchanged"
+
+
+async def test_a_subject_is_retired_rather_than_deleted(client, setup, admin) -> None:
+    """A report card from a closed year names its subjects. There is no delete
+    at all — retiring keeps every old record and stops the subject appearing
+    on new mark sheets."""
+    subject = await _a_subject(client, admin, setup)
+
+    retired = await client.patch(
+        f"/api/v1/academic/subjects/{subject['id']}",
+        json={"is_active": False},
+        headers=admin,
+    )
+
+    assert retired.status_code == 200, retired.text
+    assert retired.json()["is_active"] is False
+
+    # Still listed, because old records still name it.
+    listed = await client.get("/api/v1/academic/subjects", headers=admin)
+    row = next(each for each in listed.json() if each["id"] == subject["id"])
+    assert row["is_active"] is False
+
+    gone = await client.delete(f"/api/v1/academic/subjects/{subject['id']}", headers=admin)
+    assert gone.status_code == 405, "there is deliberately no delete"
+
+
+async def test_moving_a_subject_replaces_its_levels(client, setup, admin) -> None:
+    subject = await _a_subject(client, admin, setup)
+
+    moved = await client.patch(
+        f"/api/v1/academic/subjects/{subject['id']}",
+        json={
+            "levels": [
+                {"level_id": str(setup["std5"]), "periods_per_week": 4},
+                {"level_id": str(setup["std7"]), "periods_per_week": 6},
+            ]
+        },
+        headers=admin,
+    )
+    assert moved.status_code == 200, moved.text
+
+    listed = await client.get("/api/v1/academic/subjects", headers=admin)
+    row = next(each for each in listed.json() if each["id"] == subject["id"])
+    assert {level["level_name"] for level in row["levels"]} == {"Standard 5", "Standard 7"}
+
+
+async def test_a_level_from_another_school_cannot_be_taught_here(
+    client, setup, admin
+) -> None:
+    subject = await _a_subject(client, admin, setup)
+
+    moved = await client.patch(
+        f"/api/v1/academic/subjects/{subject['id']}",
+        json={"levels": [{"level_id": str(uuid4()), "periods_per_week": 4}]},
+        headers=admin,
+    )
+
+    assert moved.status_code == 422
+    assert "not levels at this school" in moved.json()["detail"]
+
+
+# --------------------------------------------------------------------------
+# The fields a school adds for itself
+# --------------------------------------------------------------------------
+async def test_a_school_adds_a_field_of_its_own(client, setup, admin) -> None:
+    """Every field added here appears, empty, on every pupil record."""
+    created = await client.post(
+        "/api/v1/schools/me/fields",
+        json={
+            "key": "bus_route",
+            "label": "Bus route",
+            "kind": "choice",
+            "options": ["Kimara", "Mbezi", "Tegeta"],
+            "help_text": "Only for pupils on the school bus.",
+        },
+        headers=admin,
+    )
+
+    assert created.status_code == 201, created.text
+    assert created.json()["key"] == "bus_route"
+    assert created.json()["scope"] == "student"
+    assert created.json()["required_at_registration"] is False, (
+        "a required field on the public form costs completed applications"
+    )
+
+    listed = await client.get("/api/v1/schools/me/fields", headers=admin)
+    assert [field["label"] for field in listed.json()] == ["Bus route"]
+
+
+async def test_a_choice_field_with_one_option_is_refused(client, setup, admin) -> None:
+    """A choice of one is not a choice, and the database refuses it too."""
+    created = await client.post(
+        "/api/v1/schools/me/fields",
+        json={"key": "house", "label": "House", "kind": "choice", "options": ["Simba"]},
+        headers=admin,
+    )
+
+    assert created.status_code == 422
+    assert "two options" in created.json()["detail"]
+
+
+async def test_a_key_that_would_break_an_export_is_refused(client, setup, admin) -> None:
+    """The key lands in an export header and in a URL, so it stays boring."""
+    created = await client.post(
+        "/api/v1/schools/me/fields",
+        json={"key": "bus route!", "label": "Bus route", "kind": "text"},
+        headers=admin,
+    )
+
+    assert created.status_code == 422
+    assert "letters, digits and underscores" in created.json()["detail"]
+
+
+async def test_two_fields_cannot_share_a_key(client, setup, admin) -> None:
+    await client.post(
+        "/api/v1/schools/me/fields",
+        json={"key": "bed_number", "label": "Bed number", "kind": "text"},
+        headers=admin,
+    )
+
+    again = await client.post(
+        "/api/v1/schools/me/fields",
+        json={"key": "bed_number", "label": "Bed", "kind": "text"},
+        headers=admin,
+    )
+
+    assert again.status_code == 422
+    assert "already has" in again.json()["detail"]
+
+
+async def test_a_field_is_relabelled_but_never_rekeyed(client, setup, admin) -> None:
+    """Values already recorded are stored under the key and typed by the kind,
+    so changing either would reinterpret answers people have already given."""
+    created = await client.post(
+        "/api/v1/schools/me/fields",
+        json={"key": "bus_route", "label": "Bus route", "kind": "text"},
+        headers=admin,
+    )
+    field_id = created.json()["id"]
+
+    changed = await client.patch(
+        f"/api/v1/schools/me/fields/{field_id}",
+        json={"label": "Bus route (morning)", "key": "something_else", "kind": "number"},
+        headers=admin,
+    )
+
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["label"] == "Bus route (morning)"
+    assert changed.json()["key"] == "bus_route", "ignored, not applied"
+    assert changed.json()["kind"] == "text", "ignored, not applied"
+
+
+async def test_a_field_is_retired_and_keeps_its_values(client, setup, admin) -> None:
+    created = await client.post(
+        "/api/v1/schools/me/fields",
+        json={"key": "old_thing", "label": "Old thing", "kind": "text"},
+        headers=admin,
+    )
+
+    retired = await client.patch(
+        f"/api/v1/schools/me/fields/{created.json()['id']}",
+        json={"is_active": False},
+        headers=admin,
+    )
+
+    assert retired.status_code == 200, retired.text
+    assert retired.json()["is_active"] is False
+
+
+async def test_a_bursar_cannot_add_a_field_to_every_pupil_record(client, setup) -> None:
+    bursar = await token_for(client, email=setup["bursar_email"], subdomain=setup["subdomain"])
+
+    created = await client.post(
+        "/api/v1/schools/me/fields",
+        json={"key": "whatever", "label": "Whatever", "kind": "text"},
+        headers=bursar,
+    )
+
+    assert created.status_code == 403
+
+
 async def test_a_subject_can_be_taught_at_several_levels(client, setup, admin) -> None:
     response = await client.post(
         "/api/v1/academic/subjects",

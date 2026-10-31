@@ -241,13 +241,13 @@ sentence. Nothing had walked into it because the public form only lists levels
 that have a structure, so only a staff offer on such a level could reach it.
 Translated at the boundary now, which fixes the offer path too.
 
-### Step E — school setup — **three of five screens done**
+### Step E — school setup — **done**
 
 Needed before January for a plain reason: there was no way to create the 2027
 academic year, its terms, or the classes the intake enrols into.
 
-- Design: `AcademicYears`, `Levels`, `Classes` — **built**. `Subjects`,
-  `SchoolSettings` — **not yet**, see below.
+- Design: `AcademicYears`, `Levels`, `Classes`, `Subjects`,
+  `SchoolSettings` — all built.
 - Gate: the year, its terms, its levels and its class groups are created
   through the UI with no SQL. **Met** for all four.
 - The ladder is held where it was promised: `level.order_index` plus a
@@ -268,19 +268,32 @@ additions, and both belong to Classes:
   which is Stage 2's first item surfacing early. `PUT .../class-teacher`
   existed with no way to find out whom to pass it.
 
-Subjects and School settings need more than that, so they are their own step
-rather than two half-built screens:
+Subjects and School settings followed, and needed two more:
 
-- Subjects has no `PATCH`, so a subject cannot be renamed or marked "no longer
-  taught" — and the artboard is largely about exactly that, since a subject
-  with marks against it must never be deleted.
-- Subjects' "who teaches what" needs the same staff endpoint plus a gap
-  calculation, and the artboard's "periods a week" is timetable data that does
-  not exist yet.
-- School settings needs the custom pupil fields editor and a logo upload.
+- `PATCH /academic/subjects/{id}` — rename, move, or retire. **There is no
+  delete and there never will be:** a report card from a closed year names its
+  subjects, and the marks that would prove it are a Stage 2 table that does
+  not exist yet — so nothing would stop the deletion today and everything
+  would regret it later. Retiring keeps every record and stops the subject
+  appearing on new mark sheets. Renaming is safe because the code is what
+  records point at.
+- `GET`/`POST /schools/me/fields` and `PATCH /schools/me/fields/{id}` — the
+  fields a school adds for itself. The key and the kind are fixed once values
+  exist: they are what answers are stored under and typed by, so changing
+  either would reinterpret what people have already said. The `SchoolField`
+  table and its repository existed; nothing had ever exposed them.
 
-Neither blocks January: subjects matter for marks, which is Stage 2, and every
-school setting has a working default.
+The subjects screen leaves out the artboard's **periods a week** except where
+a school has set it per level. A period is a slot in a timetable and there is
+no timetable yet, so the column would otherwise be a guess dressed as a fact.
+School settings takes a logo URL rather than an upload, because the presigned
+upload that exists is scoped to a pupil's documents and a button that cannot
+work is worse than a field that can.
+
+Each fee rule says what it will do in a sentence with the school's own figures
+in it. "Deposit: 30" is not a decision; "an offer asks for 30% of the first
+term's fees" is. The two arrears switches get the same treatment, because they
+decide whether a child is shown their own marks over money their parents owe.
 
 **Two places the artboards were followed knowingly rather than literally.**
 

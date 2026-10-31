@@ -32,7 +32,10 @@ from app.schemas.academic import (
     StreamCreateRequest,
     StreamResponse,
     SubjectCreateRequest,
+    SubjectLevelOnSubject,
     SubjectResponse,
+    SubjectRowResponse,
+    SubjectUpdateRequest,
     TeachingAssignmentCreateRequest,
     TeachingAssignmentResponse,
     TeachingStaffResponse,
@@ -534,15 +537,76 @@ async def set_class_teacher(
 # --------------------------------------------------------------------------
 # Subjects
 # --------------------------------------------------------------------------
-@router.get("/subjects", response_model=list[SubjectResponse], summary="Subjects")
+@router.get("/subjects", response_model=list[SubjectRowResponse], summary="Subjects")
 async def list_subjects(
     principal: PrincipalDep, service: AcademicServiceDep
-) -> list[SubjectResponse]:
+) -> list[SubjectRowResponse]:
+    """Each subject with the levels it is taught at.
+
+    One query for the levels rather than one per subject: a dozen subjects
+    asking one at a time is a dozen round trips on the connection this app is
+    built for.
+    """
     try:
-        subjects = await service.subjects(principal)
+        rows = await service.subjects_with_levels(principal)
+        names = await service.level_names(principal)
     except (NotAllowed, NotFound) as exc:
         raise _handle(exc) from exc
-    return [SubjectResponse.model_validate(subject) for subject in subjects]
+    return [
+        SubjectRowResponse(
+            id=subject.id,
+            code=subject.code,
+            name=subject.name,
+            is_core=subject.is_core,
+            is_examinable=subject.is_examinable,
+            is_active=subject.is_active,
+            levels=[
+                SubjectLevelOnSubject(
+                    level_id=link.level_id,
+                    level_name=names.get(link.level_id, "—"),
+                    periods_per_week=link.periods_per_week,
+                )
+                for link in levels
+            ],
+        )
+        for subject, levels in rows
+    ]
+
+
+@router.patch(
+    "/subjects/{subject_id}",
+    response_model=SubjectResponse,
+    summary="Rename, move or retire a subject",
+)
+async def update_subject(
+    subject_id: UUID,
+    body: SubjectUpdateRequest,
+    principal: PrincipalDep,
+    service: AcademicServiceDep,
+    context: ContextDep,
+) -> SubjectResponse:
+    """There is no delete.
+
+    A report card from a closed year names its subjects, so retiring one —
+    `is_active: false` — keeps every old record and stops it appearing on new
+    mark sheets. Renaming is safe: the code is what records point at.
+    """
+    changes = body.model_dump(exclude_unset=True, exclude={"levels"})
+    try:
+        subject = await service.update_subject(
+            principal,
+            subject_id=subject_id,
+            changes=changes,
+            levels=(
+                [(level.level_id, level.periods_per_week) for level in body.levels]
+                if body.levels is not None
+                else None
+            ),
+            context=context,
+        )
+    except (NotAllowed, NotFound, Invalid) as exc:
+        raise _handle(exc) from exc
+    return SubjectResponse.model_validate(subject)
 
 
 @router.post(

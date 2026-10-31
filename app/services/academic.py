@@ -31,6 +31,7 @@ from app.domain.academic_year import (
     validate_year,
 )
 from app.domain.enrolment import LevelStage, class_group_name
+from app.domain.registration import FieldKind, FieldScope, validate_definition
 from app.domain.roles import Permission, Principal, can
 from app.models.academic import (
     AcademicYear,
@@ -38,15 +39,20 @@ from app.models.academic import (
     Level,
     Stream,
     Subject,
+    SubjectLevel,
     TeachingAssignment,
     Term,
 )
 from app.models.audit import AuditOutcome
+from app.models.custom_field import SchoolField
 from app.models.school import School
 from app.repositories.academic import AcademicRepository
 from app.repositories.audit import AuditRepository
 from app.repositories.base import UnitOfWork
-from app.repositories.schools import SchoolRepository
+from app.repositories.schools import (
+    SchoolRepository,
+    SqlRegistrationSettingsRepository,
+)
 from app.services.auth import RequestContext
 
 
@@ -100,11 +106,13 @@ class AcademicService:
         uow: UnitOfWork,
         academic: AcademicRepository,
         schools: SchoolRepository,
+        settings_repo: SqlRegistrationSettingsRepository,
         audit: AuditRepository,
     ) -> None:
         self._uow = uow
         self._academic = academic
         self._schools = schools
+        self._settings = settings_repo
         self._audit = audit
 
     # ----------------------------------------------------------------------
@@ -764,6 +772,237 @@ class AcademicService:
     async def subjects(self, principal: Principal) -> list[Subject]:
         self._require_staff(principal)
         return await self._academic.subjects()
+
+    # ----------------------------------------------------------------------
+    # The fields a school adds for itself
+    # ----------------------------------------------------------------------
+    async def school_fields(self, principal: Principal) -> list[SchoolField]:
+        """Every field this school has decided it needs.
+
+        Read by staff rather than by `academic:manage`, because the pupil
+        profile has to draw them for anybody who can read a pupil.
+        """
+        self._require_staff(principal)
+        return await self._settings.fields()
+
+    async def add_school_field(
+        self,
+        principal: Principal,
+        *,
+        key: str,
+        label: str,
+        kind: FieldKind,
+        scope: FieldScope,
+        options: list[str],
+        help_text: str | None,
+        required_at_registration: bool,
+        is_sensitive: bool,
+        context: RequestContext,
+    ) -> SchoolField:
+        """Add a field, and mean it.
+
+        Every field added here appears, empty, on every pupil record the school
+        has — somebody then has to fill them all in. That is the whole cost of
+        this button and it belongs on the screen rather than in a docstring,
+        but it is worth saying twice.
+
+        The key is checked rather than trusted: it lands in an export header
+        and in a URL, so it stays letters, digits and underscores.
+        """
+        self._require(principal, Permission.SCHOOL_MANAGE)
+        school = await self._school(principal)
+
+        problems = validate_definition(key=key, kind=kind, options=tuple(options))
+        if problems:
+            raise Invalid("; ".join(problems))
+
+        async with self._uow:
+            clash = await self._settings.field_by_key(scope=scope, key=key.strip())
+            if clash is not None:
+                raise Invalid(
+                    f'this school already has a {scope.value} field keyed "{key.strip()}"'
+                )
+
+            field = await self._settings.add_field(
+                school_id=school.id,
+                key=key.strip(),
+                label=label.strip(),
+                kind=kind,
+                scope=scope,
+                options=options or None,
+                help_text=(help_text or "").strip() or None,
+                required_at_registration=required_at_registration,
+                is_sensitive=is_sensitive,
+            )
+            await self._audit.record(
+                school_id=school.id,
+                action="school_field.created",
+                actor_user_id=principal.user_id,
+                actor_role=principal.role.value,
+                entity_type="school_field",
+                entity_id=field.id,
+                changed={"key": field.key, "kind": kind.value, "scope": scope.value},
+                note=field.label,
+                ip=context.ip,
+                user_agent=context.user_agent,
+            )
+            await self._uow.commit()
+            return field
+
+    async def update_school_field(
+        self,
+        principal: Principal,
+        *,
+        field_id: UUID,
+        changes: dict[str, Any],
+        context: RequestContext,
+    ) -> SchoolField:
+        """Relabel a field, or retire it.
+
+        **The key and the kind cannot change.** Values already recorded against
+        this field are stored under that key and typed by that kind, so
+        changing either would reinterpret answers people have already given —
+        a date read as text, or a column that quietly means something else in
+        last year's export. Retiring it keeps every value and stops it being
+        asked for again.
+        """
+        self._require(principal, Permission.SCHOOL_MANAGE)
+        school = await self._school(principal)
+
+        async with self._uow:
+            field = await self._settings.field(field_id)
+            if field is None:
+                raise NotFound("no such field")
+
+            if "options" in changes:
+                problems = validate_definition(
+                    key=field.key,
+                    kind=FieldKind(field.kind),
+                    options=tuple(changes["options"] or ()),
+                )
+                if problems:
+                    raise Invalid("; ".join(problems))
+                field.options = changes["options"] or None
+
+            if "label" in changes:
+                field.label = str(changes["label"]).strip()
+            if "help_text" in changes:
+                field.help_text = (str(changes["help_text"]) or "").strip() or None
+            if "required_at_registration" in changes:
+                field.required_at_registration = bool(changes["required_at_registration"])
+            if "is_sensitive" in changes:
+                field.is_sensitive = bool(changes["is_sensitive"])
+            if "is_active" in changes:
+                field.is_active = bool(changes["is_active"])
+            if "sort_order" in changes:
+                field.sort_order = int(changes["sort_order"])
+
+            await self._audit.record(
+                school_id=school.id,
+                action="school_field.updated",
+                actor_user_id=principal.user_id,
+                actor_role=principal.role.value,
+                entity_type="school_field",
+                entity_id=field.id,
+                changed={"key": field.key, "to": dict(changes)},
+                note=field.label,
+                ip=context.ip,
+                user_agent=context.user_agent,
+            )
+            await self._uow.commit()
+            return field
+
+    async def level_names(self, principal: Principal) -> dict[UUID, str]:
+        """Level ids to names, for anything that joins against them."""
+        self._require_staff(principal)
+        return {level.id: level.name for level in await self._academic.levels()}
+
+    async def subjects_with_levels(
+        self, principal: Principal
+    ) -> list[tuple[Subject, list[SubjectLevel]]]:
+        """Subjects, each with the levels it is taught at.
+
+        Kiswahili at Standard 2 and Kiswahili at Standard 6 are the same
+        subject against a different syllabus, so the periods per week belong
+        to the pairing rather than to the subject — which is why they come back
+        attached to the level rather than on the subject row.
+        """
+        self._require_staff(principal)
+        subjects = await self._academic.subjects()
+        levels = await self._academic.subject_levels_all()
+        return [(subject, levels.get(subject.id, [])) for subject in subjects]
+
+    async def update_subject(
+        self,
+        principal: Principal,
+        *,
+        subject_id: UUID,
+        changes: dict[str, Any],
+        levels: list[tuple[UUID, int | None]] | None,
+        context: RequestContext,
+    ) -> Subject:
+        """Rename a subject, change where it is taught, or retire it.
+
+        **There is no delete, on purpose.** A report card from a closed year
+        names its subjects, so a deleted subject makes an old report card stop
+        making sense — and the marks that would prove it are a Stage 2 table
+        which does not exist yet, so nothing would stop the deletion today and
+        everything would regret it later. Retiring keeps every old record and
+        stops the subject appearing on new mark sheets.
+
+        Renaming is safe by design: the code is what records point at.
+        """
+        self._require(principal, Permission.ACADEMIC_MANAGE)
+        school = await self._school(principal)
+
+        async with self._uow:
+            subject = await self._academic.subject(subject_id)
+            if subject is None:
+                raise NotFound("no such subject")
+
+            before = {
+                "name": subject.name,
+                "code": subject.code,
+                "is_active": subject.is_active,
+            }
+            if "name" in changes:
+                subject.name = str(changes["name"]).strip()
+            if "code" in changes:
+                subject.code = str(changes["code"]).strip().upper()
+            if "is_core" in changes:
+                subject.is_core = bool(changes["is_core"])
+            if "is_examinable" in changes:
+                subject.is_examinable = bool(changes["is_examinable"])
+            if "is_active" in changes:
+                subject.is_active = bool(changes["is_active"])
+
+            if levels is not None:
+                known = {level.id for level in await self._academic.levels()}
+                unknown = [str(lid) for lid, _ in levels if lid not in known]
+                if unknown:
+                    raise Invalid(f"these are not levels at this school: {', '.join(unknown)}")
+                await self._academic.set_subject_levels(
+                    subject_id, school_id=school.id, levels=levels
+                )
+
+            await self._audit.record(
+                school_id=school.id,
+                action="subject.updated",
+                actor_user_id=principal.user_id,
+                actor_role=principal.role.value,
+                entity_type="subject",
+                entity_id=subject_id,
+                changed={
+                    "from": {k: v for k, v in before.items() if k in changes},
+                    "to": dict(changes),
+                    "levels": len(levels) if levels is not None else None,
+                },
+                note=subject.name,
+                ip=context.ip,
+                user_agent=context.user_agent,
+            )
+            await self._uow.commit()
+            return subject
 
     async def create_subject(
         self,

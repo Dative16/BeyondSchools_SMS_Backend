@@ -70,6 +70,7 @@ class AcademicRepository(Protocol):
     async def subject(self, subject_id: UUID) -> Subject | None: ...
     async def add_subject(self, **values: Any) -> Subject: ...
     async def subject_levels(self, subject_id: UUID) -> list[SubjectLevel]: ...
+    async def subject_levels_all(self) -> dict[UUID, list[SubjectLevel]]: ...
     async def set_subject_levels(
         self,
         subject_id: UUID,
@@ -308,6 +309,21 @@ class SqlAcademicRepository:
         self._session.add(subject)
         await self._session.flush()
         return subject
+
+    async def subject_levels_all(self) -> dict[UUID, list[SubjectLevel]]:
+        """Every subject's levels in one query.
+
+        The subjects screen shows the levels and the periods for each row, and
+        a dozen subjects asking one at a time is a dozen round trips on the
+        connection this app is built for.
+        """
+        rows = (
+            await self._session.execute(select(SubjectLevel).order_by(SubjectLevel.subject_id))
+        ).scalars().all()
+        grouped: dict[UUID, list[SubjectLevel]] = {}
+        for row in rows:
+            grouped.setdefault(row.subject_id, []).append(row)
+        return grouped
 
     async def subject_levels(self, subject_id: UUID) -> list[SubjectLevel]:
         return list(
