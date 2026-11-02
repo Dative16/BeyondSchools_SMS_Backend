@@ -392,6 +392,28 @@ those they are about to do.
 **Stage 1 is done when** a January 2027 intake can be run start to finish on
 this system by somebody who is not a developer.
 
+**It is, and there is a test that says so.**
+`tests/integration/test_january_intake.py` walks the whole thing over HTTP in
+fifteen steps, with no SQL after the fixture: the school's own settings and
+bank details, a field only this school needs, the 2027 year, its three terms
+(an overlapping pair refused first), two levels, the exit rule that completes
+the ladder, a class with a place limit and a class teacher, a subject, a fee
+structure drafted and published (an empty one refused, and the published one
+frozen), a family applying on their own phone and being screened, offered,
+paid for and enrolled, a second family admitted at the counter, the class
+filling up and being opened, the term run previewed and raised and run again
+without double-billing, a receipt entered and the same slip refused twice, the
+record corrected four ways, and a parent signing in by one-time code to read
+their own child's balance — and only their own child's.
+
+Two things are deliberately outside it, because they are not Stage 1's job:
+the school row and the first staff login. A school is onboarded by the
+platform, and somebody has to be able to sign in before they can set anything
+up.
+
+One long test on purpose. The failure it exists to catch is a seam between two
+steps that each pass alone, and a seam cannot be tested in isolation.
+
 ---
 
 ## Stage 2 — academic operations
